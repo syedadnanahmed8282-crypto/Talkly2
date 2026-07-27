@@ -65,6 +65,14 @@ fun MainScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var activeChatMember by remember { mutableStateOf<FamilyMember?>(null) }
     val familyMembers by chatRepository.familyMembers.collectAsState()
+    val blockedUserIds by chatRepository.blockedUserIds.collectAsState()
+    val statuses by chatRepository.statuses.collectAsState()
+    val simulatedTimeOffsetMs by chatRepository.simulatedTimeOffsetMs.collectAsState()
+    val messagesMap by chatRepository.messagesMap.collectAsState()
+
+    val statusGroups = remember(statuses, familyMembers, simulatedTimeOffsetMs, currentUserProfile) {
+        chatRepository.getGroupedActiveStatuses("self")
+    }
 
     val callInfo by zegoManager.callState.collectAsState()
     val callLogs by zegoManager.callLogs.collectAsState()
@@ -108,8 +116,6 @@ fun MainScreen(
             callPermissionsLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
         }
     }
-    val messagesMap by chatRepository.messagesMap.collectAsState()
-    val simulatedTimeOffsetMs by chatRepository.simulatedTimeOffsetMs.collectAsState()
 
     // Handle Incoming Call Modal
     if (callInfo.state == CallState.INCOMING_RINGING && callInfo.targetMember != null) {
@@ -179,143 +185,84 @@ fun MainScreen(
             },
             onReadMessages = {
                 chatRepository.markMessagesAsRead(currentMember.id)
+            },
+            isInitiallyBlocked = blockedUserIds.contains(currentMember.id),
+            onBlockUser = {
+                chatRepository.blockUser(currentMember.id)
+            },
+            onUnblockUser = {
+                chatRepository.unblockUser(currentMember.id)
             }
         )
         return
     }
 
-    // Main Bottom Tab Navigation Container
-    Scaffold(
-        bottomBar = {
-            NavigationBar(
-                containerColor = PrimaryDarkPurple,
-                tonalElevation = 8.dp
-            ) {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = {
-                        BadgedBox(
-                            badge = {
-                                val totalUnread = familyMembers.sumOf { it.unreadCount }
-                                if (totalUnread > 0) {
-                                    Badge(containerColor = SecondaryLightSage) {
-                                        Text(totalUnread.toString(), color = PrimaryDarkPurple, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        ) {
-                            Icon(imageVector = Icons.Default.Chat, contentDescription = "Chats")
-                        }
-                    },
-                    label = { Text("Chats", fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal) },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = SecondaryLightSage,
-                        selectedTextColor = SecondaryLightSage,
-                        unselectedIconColor = Color.White.copy(alpha = 0.6f),
-                        unselectedTextColor = Color.White.copy(alpha = 0.6f),
-                        indicatorColor = SecondaryLightSage.copy(alpha = 0.25f)
-                    )
-                )
-
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(imageVector = Icons.Default.Call, contentDescription = "Calls") },
-                    label = { Text("Calls", fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal) },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = SecondaryLightSage,
-                        selectedTextColor = SecondaryLightSage,
-                        unselectedIconColor = Color.White.copy(alpha = 0.6f),
-                        unselectedTextColor = Color.White.copy(alpha = 0.6f),
-                        indicatorColor = SecondaryLightSage.copy(alpha = 0.25f)
-                    )
-                )
-
-                NavigationBarItem(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
-                    icon = { Icon(imageVector = Icons.Default.FamilyRestroom, contentDescription = "Family") },
-                    label = { Text("Family", fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Normal) },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = SecondaryLightSage,
-                        selectedTextColor = SecondaryLightSage,
-                        unselectedIconColor = Color.White.copy(alpha = 0.6f),
-                        unselectedTextColor = Color.White.copy(alpha = 0.6f),
-                        indicatorColor = SecondaryLightSage.copy(alpha = 0.25f)
-                    )
-                )
-            }
+    // Main Screen Content
+    ChatListScreen(
+        familyMembers = familyMembers,
+        messagesMap = messagesMap,
+        simulatedTimeOffsetMs = simulatedTimeOffsetMs,
+        currentUserProfile = currentUserProfile,
+        currentThemeMode = currentThemeMode,
+        onThemeModeChange = onThemeModeChange,
+        onLogout = onLogout,
+        onSaveProfile = onSaveProfile,
+        onSelectMember = { activeChatMember = it },
+        onStartCall = { member, type ->
+            startCallWithPermissions(member, type)
+        },
+        onTriggerIncomingDemo = { member ->
+            zegoManager.triggerIncomingCall(member, CallType.VIDEO)
+        },
+        onTogglePinMember = { memberId ->
+            chatRepository.togglePinMember(memberId)
+        },
+        onSearchUserByPhone = { phone, callback ->
+            chatRepository.searchTalklyUserByPhone(phone, callback)
+        },
+        onAddContact = { name, phone, relation, bio, avatarUrl ->
+            chatRepository.addNewContact(name, phone, relation, bio, avatarUrl)
+        },
+        onDeleteContact = { memberId ->
+            chatRepository.deleteContact(memberId)
+        },
+        onClearDemoContacts = {
+            chatRepository.clearDemoContacts()
+        },
+        statusGroups = statusGroups,
+        onPostStatus = { textContent, photoUrl, bgHex ->
+            val userName = currentUserProfile?.name?.ifBlank { "You" } ?: "You"
+            val userAvatar = currentUserProfile?.profilePicUrl?.ifBlank { null }
+            chatRepository.postStatus(
+                userId = "self",
+                userName = userName,
+                userAvatarUrl = userAvatar,
+                textContent = textContent,
+                photoUrl = photoUrl,
+                backgroundColorHex = bgHex
+            )
+        },
+        onMarkStatusSeen = { statusId ->
+            chatRepository.markStatusAsSeen(statusId)
+        },
+        onToggleLikeStatus = { statusId ->
+            val userName = currentUserProfile?.name?.ifBlank { "You" } ?: "You"
+            val userAvatar = currentUserProfile?.profilePicUrl?.ifBlank { null }
+            chatRepository.toggleStatusLike(statusId, "self", userName, userAvatar)
+        },
+        onSendStatusReply = { targetUserId, replyText ->
+            chatRepository.sendMessage(
+                memberId = targetUserId,
+                textContent = "💬 [Status Reply]: $replyText",
+                type = com.family.talkly.data.models.MessageType.TEXT
+            )
+        },
+        blockedUserIds = blockedUserIds,
+        onBlockUser = { memberId ->
+            chatRepository.blockUser(memberId)
+        },
+        onUnblockUser = { memberId ->
+            chatRepository.unblockUser(memberId)
         }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            when (selectedTab) {
-                0 -> ChatListScreen(
-                    familyMembers = familyMembers,
-                    messagesMap = messagesMap,
-                    simulatedTimeOffsetMs = simulatedTimeOffsetMs,
-                    currentUserProfile = currentUserProfile,
-                    currentThemeMode = currentThemeMode,
-                    onThemeModeChange = onThemeModeChange,
-                    onLogout = onLogout,
-                    onSaveProfile = onSaveProfile,
-                    onSelectMember = { activeChatMember = it },
-                    onStartCall = { member, type ->
-                        startCallWithPermissions(member, type)
-                    },
-                    onTriggerIncomingDemo = { member ->
-                        zegoManager.triggerIncomingCall(member, CallType.VIDEO)
-                    },
-                    onTogglePinMember = { memberId ->
-                        chatRepository.togglePinMember(memberId)
-                    },
-                    onSearchUserByPhone = { phone, callback ->
-                        chatRepository.searchTalklyUserByPhone(phone, callback)
-                    },
-                    onAddContact = { name, phone, relation, bio, avatarUrl ->
-                        chatRepository.addNewContact(name, phone, relation, bio, avatarUrl)
-                    },
-                    onDeleteContact = { memberId ->
-                        chatRepository.deleteContact(memberId)
-                    },
-                    onClearDemoContacts = {
-                        chatRepository.clearDemoContacts()
-                    }
-                )
-                1 -> CallLogsScreen(
-                    callLogs = callLogs,
-                    familyMembers = familyMembers,
-                    onStartCall = { member, type ->
-                        startCallWithPermissions(member, type)
-                    }
-                )
-                2 -> FamilyMembersScreen(
-                    familyMembers = familyMembers,
-                    onSelectMember = { activeChatMember = it },
-                    onStartCall = { member, type ->
-                        startCallWithPermissions(member, type)
-                    },
-                    onTogglePresence = { member ->
-                        chatRepository.toggleMemberPresence(member.id)
-                    },
-                    onSearchUserByPhone = { phone, callback ->
-                        chatRepository.searchTalklyUserByPhone(phone, callback)
-                    },
-                    onAddContact = { name, phone, relation, bio, avatarUrl ->
-                        chatRepository.addNewContact(name, phone, relation, bio, avatarUrl)
-                    },
-                    onDeleteContact = { memberId ->
-                        chatRepository.deleteContact(memberId)
-                    },
-                    onClearDemoContacts = {
-                        chatRepository.clearDemoContacts()
-                    }
-                )
-            }
-        }
-    }
+    )
 }

@@ -14,6 +14,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+import com.family.talkly.data.models.StatusItem
+import com.family.talkly.data.models.UserStatusGroup
+import com.family.talkly.data.models.StatusViewer
+import com.family.talkly.data.models.StatusLiker
+
 class FirebaseChatRepository(private val context: Context) {
 
     companion object {
@@ -22,6 +27,8 @@ class FirebaseChatRepository(private val context: Context) {
         private const val CONTACTS_PREFS = "talkly_saved_contacts_prefs"
         private const val KEY_SAVED_CONTACTS_JSON = "saved_contacts_json"
         private const val KEY_DEMO_CLEARED = "demo_contacts_cleared"
+        private const val KEY_STATUSES_JSON = "talkly_statuses_json"
+        private const val KEY_BLOCKED_USERS = "talkly_blocked_user_ids"
     }
 
     private var firestore: FirebaseFirestore? = null
@@ -32,6 +39,10 @@ class FirebaseChatRepository(private val context: Context) {
     private val _familyMembers = MutableStateFlow<List<FamilyMember>>(emptyList())
     val familyMembers: StateFlow<List<FamilyMember>> = _familyMembers.asStateFlow()
 
+    // Blocked Users state
+    private val _blockedUserIds = MutableStateFlow<Set<String>>(emptySet())
+    val blockedUserIds: StateFlow<Set<String>> = _blockedUserIds.asStateFlow()
+
     // Time offset for live testing 48-hour expiration logic
     private val _simulatedTimeOffsetMs = MutableStateFlow(0L)
     val simulatedTimeOffsetMs: StateFlow<Long> = _simulatedTimeOffsetMs.asStateFlow()
@@ -39,6 +50,10 @@ class FirebaseChatRepository(private val context: Context) {
     // Message maps by family member id
     private val _messagesMap = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
     val messagesMap: StateFlow<Map<String, List<ChatMessage>>> = _messagesMap.asStateFlow()
+
+    // Statuses flow (24-hour disappearing updates)
+    private val _statuses = MutableStateFlow<List<StatusItem>>(emptyList())
+    val statuses: StateFlow<List<StatusItem>> = _statuses.asStateFlow()
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -53,6 +68,31 @@ class FirebaseChatRepository(private val context: Context) {
         }
         loadInitialFamilyMembers()
         seedInitialFamilyChats()
+        loadStatuses()
+        loadBlockedUsers()
+    }
+
+    fun loadBlockedUsers() {
+        val set = contactPrefs.getStringSet(KEY_BLOCKED_USERS, emptySet()) ?: emptySet()
+        _blockedUserIds.value = set
+    }
+
+    fun blockUser(userId: String) {
+        val updated = _blockedUserIds.value.toMutableSet()
+        updated.add(userId)
+        _blockedUserIds.value = updated
+        contactPrefs.edit().putStringSet(KEY_BLOCKED_USERS, updated).apply()
+    }
+
+    fun unblockUser(userId: String) {
+        val updated = _blockedUserIds.value.toMutableSet()
+        updated.remove(userId)
+        _blockedUserIds.value = updated
+        contactPrefs.edit().putStringSet(KEY_BLOCKED_USERS, updated).apply()
+    }
+
+    fun isUserBlocked(userId: String): Boolean {
+        return _blockedUserIds.value.contains(userId)
     }
 
     private fun loadInitialFamilyMembers() {
@@ -623,5 +663,206 @@ class FirebaseChatRepository(private val context: Context) {
             mediaUrl = "https://images.unsplash.com/photo-1511895426328-dc8714191300?w=600&auto=format&fit=crop&q=80",
             forcedTimestamp = fiftyHoursAgo
         )
+    }
+
+    // --- 24-HOUR DISAPPEARING STATUS METHODS ---
+
+    private fun loadStatuses() {
+        val savedStatusesJson = contactPrefs.getString(KEY_STATUSES_JSON, null)
+        val loadedList = mutableListOf<StatusItem>()
+
+        if (!savedStatusesJson.isNullOrBlank()) {
+            try {
+                val jsonArray = org.json.JSONArray(savedStatusesJson)
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    val status = StatusItem(
+                        id = obj.getString("id"),
+                        userId = obj.getString("userId"),
+                        userName = obj.getString("userName"),
+                        userAvatarUrl = if (obj.has("userAvatarUrl") && !obj.isNull("userAvatarUrl")) obj.getString("userAvatarUrl") else null,
+                        textContent = if (obj.has("textContent") && !obj.isNull("textContent")) obj.getString("textContent") else null,
+                        photoUrl = if (obj.has("photoUrl") && !obj.isNull("photoUrl")) obj.getString("photoUrl") else null,
+                        backgroundColorHex = obj.optString("backgroundColorHex", "#321C3B"),
+                        timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
+                        isSeen = obj.optBoolean("isSeen", false)
+                    )
+                    if (!status.isExpired(_simulatedTimeOffsetMs.value)) {
+                        loadedList.add(status)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error parsing saved statuses: ${e.message}")
+            }
+        }
+
+        // Seed initial sample statuses if none exist
+        if (loadedList.isEmpty()) {
+            val now = System.currentTimeMillis()
+            val twoHoursAgo = now - (2 * 60 * 60 * 1000L)
+            val fourHoursAgo = now - (4 * 60 * 60 * 1000L)
+            val sixHoursAgo = now - (6 * 60 * 60 * 1000L)
+
+            val seedStatuses = listOf(
+                StatusItem(
+                    id = "status_safwan_1",
+                    userId = "safwan",
+                    userName = "Safwan",
+                    userAvatarUrl = null,
+                    textContent = "শুভ সকাল সবাইকে! 🌸 হ্যাভ আ গ্রেট ডে!",
+                    backgroundColorHex = "#321C3B",
+                    timestamp = twoHoursAgo,
+                    isSeen = false
+                ),
+                StatusItem(
+                    id = "status_dr_rashed_1",
+                    userId = "dr_rashed",
+                    userName = "Dr. Rashed",
+                    userAvatarUrl = null,
+                    textContent = "In medical consultation today. Stay safe & healthy! 🩺",
+                    photoUrl = "https://images.unsplash.com/photo-1505751172876-fa1923c5c528?w=800&auto=format&fit=crop&q=80",
+                    backgroundColorHex = "#004D40",
+                    timestamp = fourHoursAgo,
+                    isSeen = false
+                ),
+                StatusItem(
+                    id = "status_sk_farid_1",
+                    userId = "sk_farid",
+                    userName = "Sk F A R I D",
+                    userAvatarUrl = null,
+                    textContent = "Working on new mobile app features! 💼💻",
+                    backgroundColorHex = "#1A237E",
+                    timestamp = sixHoursAgo,
+                    isSeen = false
+                )
+            )
+            loadedList.addAll(seedStatuses)
+        }
+
+        _statuses.value = loadedList
+        saveStatusesToPrefs()
+    }
+
+    private fun saveStatusesToPrefs() {
+        try {
+            val jsonArray = org.json.JSONArray()
+            _statuses.value.forEach { status ->
+                val obj = org.json.JSONObject().apply {
+                    put("id", status.id)
+                    put("userId", status.userId)
+                    put("userName", status.userName)
+                    put("userAvatarUrl", status.userAvatarUrl)
+                    put("textContent", status.textContent)
+                    put("photoUrl", status.photoUrl)
+                    put("backgroundColorHex", status.backgroundColorHex)
+                    put("timestamp", status.timestamp)
+                    put("isSeen", status.isSeen)
+                }
+                jsonArray.put(obj)
+            }
+            contactPrefs.edit().putString(KEY_STATUSES_JSON, jsonArray.toString()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving statuses to prefs: ${e.message}")
+        }
+    }
+
+    fun postStatus(
+        userId: String = "self",
+        userName: String = "You",
+        userAvatarUrl: String? = null,
+        textContent: String? = null,
+        photoUrl: String? = null,
+        backgroundColorHex: String = "#321C3B"
+    ) {
+        val sampleViewers: List<StatusViewer> = if (userId == "self") listOf(
+            StatusViewer("dr_rashed", "Dr. Rashed", null, "10m ago"),
+            StatusViewer("sk_farid", "Sk F A R I D", null, "25m ago"),
+            StatusViewer("safwan", "Safwan", null, "1h ago")
+        ) else emptyList()
+
+        val sampleLikes: List<StatusLiker> = if (userId == "self") listOf(
+            StatusLiker("dr_rashed", "Dr. Rashed", null),
+            StatusLiker("safwan", "Safwan", null)
+        ) else emptyList()
+
+        val newStatus = StatusItem(
+            id = "status_${System.currentTimeMillis()}",
+            userId = userId,
+            userName = userName,
+            userAvatarUrl = userAvatarUrl,
+            textContent = textContent,
+            photoUrl = photoUrl,
+            backgroundColorHex = backgroundColorHex,
+            timestamp = System.currentTimeMillis(),
+            isSeen = true, // own status is seen by self
+            viewers = sampleViewers,
+            likes = sampleLikes
+        )
+
+        val currentList = _statuses.value.toMutableList()
+        currentList.add(0, newStatus)
+        _statuses.value = currentList
+        saveStatusesToPrefs()
+
+        // Sync status to Firestore
+        try {
+            firestore?.collection("statuses")?.document(newStatus.id)?.set(newStatus)
+        } catch (e: Exception) {
+            Log.w(TAG, "Firestore status sync skipped: ${e.localizedMessage}")
+        }
+    }
+
+    fun toggleStatusLike(statusId: String, currentUserId: String = "self", currentUserName: String = "You", currentUserAvatar: String? = null) {
+        val updated = _statuses.value.map { status ->
+            if (status.id == statusId) {
+                val existingLike = status.likes.firstOrNull { it.userId == currentUserId }
+                val newLikes = if (existingLike != null) {
+                    status.likes.filter { it.userId != currentUserId }
+                } else {
+                    status.likes + StatusLiker(currentUserId, currentUserName, currentUserAvatar)
+                }
+                status.copy(likes = newLikes)
+            } else {
+                status
+            }
+        }
+        _statuses.value = updated
+        saveStatusesToPrefs()
+    }
+
+    fun markStatusAsSeen(statusId: String) {
+        val updated = _statuses.value.map { status ->
+            if (status.id == statusId) status.copy(isSeen = true) else status
+        }
+        _statuses.value = updated
+        saveStatusesToPrefs()
+    }
+
+    fun getGroupedActiveStatuses(currentUserId: String = "self"): List<UserStatusGroup> {
+        val activeStatuses = _statuses.value.filter { !it.isExpired(_simulatedTimeOffsetMs.value) }
+        val groupedMap = activeStatuses.groupBy { it.userId }
+
+        val groups = groupedMap.map { (uId, statusList) ->
+            val firstItem = statusList.first()
+            UserStatusGroup(
+                userId = uId,
+                userName = if (uId == currentUserId) "My Status" else firstItem.userName,
+                userAvatarUrl = firstItem.userAvatarUrl,
+                statuses = statusList.sortedBy { it.timestamp }
+            )
+        }.toMutableList()
+
+        // Sort so "My Status" is first, then users with unseen status, then recent
+        groups.sortWith { g1, g2 ->
+            when {
+                g1.userId == currentUserId -> -1
+                g2.userId == currentUserId -> 1
+                g1.hasUnseen && !g2.hasUnseen -> -1
+                !g1.hasUnseen && g2.hasUnseen -> 1
+                else -> (g2.statuses.lastOrNull()?.timestamp ?: 0L).compareTo(g1.statuses.lastOrNull()?.timestamp ?: 0L)
+            }
+        }
+
+        return groups
     }
 }

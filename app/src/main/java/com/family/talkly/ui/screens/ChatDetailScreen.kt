@@ -164,7 +164,10 @@ fun ChatDetailScreen(
     onToggleFastForward: () -> Unit,
     onAddExpiredDemo: () -> Unit,
     onStartCall: (CallType) -> Unit,
-    onReadMessages: () -> Unit = {}
+    onReadMessages: () -> Unit = {},
+    isInitiallyBlocked: Boolean = false,
+    onBlockUser: (() -> Unit)? = null,
+    onUnblockUser: (() -> Unit)? = null
 ) {
     var textInput by remember { mutableStateOf("") }
     var showAttachmentDialog by remember { mutableStateOf(false) }
@@ -275,7 +278,7 @@ fun ChatDetailScreen(
     }
     var showMenu by remember { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
-    var isBlocked by remember { mutableStateOf(false) }
+    var isBlocked by remember(isInitiallyBlocked) { mutableStateOf(isInitiallyBlocked) }
     var showBlockConfirmDialog by remember { mutableStateOf(false) }
     var showClearChatConfirmDialog by remember { mutableStateOf(false) }
     var showWallpaperDialog by remember { mutableStateOf(false) }
@@ -638,6 +641,7 @@ fun ChatDetailScreen(
                     onClick = {
                         showBlockConfirmDialog = false
                         isBlocked = true
+                        onBlockUser?.invoke()
                         Toast.makeText(context, "${member.name} has been blocked", Toast.LENGTH_SHORT).show()
                     }
                 ) {
@@ -969,6 +973,7 @@ fun ChatDetailScreen(
                                     showMenu = false
                                     if (isBlocked) {
                                         isBlocked = false
+                                        onUnblockUser?.invoke()
                                         Toast.makeText(context, "${member.name} unblocked", Toast.LENGTH_SHORT).show()
                                     } else {
                                         showBlockConfirmDialog = true
@@ -1567,6 +1572,7 @@ fun ChatDetailScreen(
                         .fillMaxWidth()
                         .clickable {
                             isBlocked = false
+                            onUnblockUser?.invoke()
                             Toast.makeText(context, "${member.name} unblocked", Toast.LENGTH_SHORT).show()
                         }
                 ) {
