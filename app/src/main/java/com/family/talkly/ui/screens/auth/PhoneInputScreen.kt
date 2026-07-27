@@ -264,7 +264,7 @@ fun PhoneInputScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "💡 Bangladesh default (+880). You can enter any 10-digit number to test OTP authentication.",
+                            text = "💡 Enter your phone number with country code to receive a 6-digit SMS verification code via Firebase.",
                             fontSize = 12.sp,
                             color = WhatsappTeal,
                             lineHeight = 16.sp

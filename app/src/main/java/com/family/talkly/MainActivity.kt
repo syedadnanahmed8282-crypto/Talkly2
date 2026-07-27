@@ -95,7 +95,7 @@ class MainActivity : ComponentActivity() {
                             OtpVerificationScreen(
                                 phoneNumber = state.phoneNumber,
                                 isLoading = false,
-                                errorMessage = null,
+                                errorMessage = state.error,
                                 onVerifyOtp = { otpCode ->
                                     authManager.verifyOtp(
                                         otpCode = otpCode,

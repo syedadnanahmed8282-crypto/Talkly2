@@ -19,7 +19,11 @@ import java.util.concurrent.TimeUnit
 sealed class AuthState {
     object InitialCheck : AuthState()
     object Unauthenticated : AuthState()
-    data class CodeSent(val verificationId: String, val phoneNumber: String) : AuthState()
+    data class CodeSent(
+        val verificationId: String,
+        val phoneNumber: String,
+        val error: String? = null
+    ) : AuthState()
     data class VerificationInProgress(val message: String = "Verifying OTP...") : AuthState()
     data class ProfileSetupRequired(val uid: String, val phoneNumber: String) : AuthState()
     data class Authenticated(val profile: UserProfile) : AuthState()
@@ -99,13 +103,13 @@ class AuthManager(private val context: Context) {
     fun sendOtp(
         activity: Activity,
         phoneNumber: String,
-        onSuccess: () -> Unit,
-        onError: (String) -> Unit
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
     ) {
         _authState.value = AuthState.VerificationInProgress("Sending OTP to $phoneNumber...")
 
         try {
-            val options = PhoneAuthOptions.newBuilder(firebaseAuth)
+            val optionsBuilder = PhoneAuthOptions.newBuilder(firebaseAuth)
                 .setPhoneNumber(phoneNumber)
                 .setTimeout(60L, TimeUnit.SECONDS)
                 .setActivity(activity)
@@ -114,19 +118,17 @@ class AuthManager(private val context: Context) {
                         Log.d(TAG, "Phone verification completed automatically")
                         val code = credential.smsCode
                         if (code != null && currentVerificationId != null) {
-                            verifyOtp(code, onSuccess = {}, onError = {})
+                            verifyOtp(code, onSuccess, onError)
                         } else {
-                            signInWithPhoneCredential(credential, phoneNumber)
+                            signInWithPhoneCredential(credential, phoneNumber, onSuccess, onError)
                         }
                     }
 
                     override fun onVerificationFailed(e: FirebaseException) {
-                        Log.w(TAG, "Firebase phone verification failed: ${e.localizedMessage}")
-                        // Demo fallback verification ID if SMS/SafetyNet/reCAPTCHA fails on emulator/test env
-                        val demoVerificationId = "demo_ver_id_${System.currentTimeMillis()}"
-                        currentVerificationId = demoVerificationId
-                        _authState.value = AuthState.CodeSent(demoVerificationId, phoneNumber)
-                        onSuccess()
+                        Log.w(TAG, "Firebase phone verification failed: ${e.localizedMessage}", e)
+                        val errorMsg = e.localizedMessage ?: "Phone verification failed. Please check the number."
+                        _authState.value = AuthState.Error(errorMsg)
+                        onError(errorMsg)
                     }
 
                     override fun onCodeSent(
@@ -140,15 +142,17 @@ class AuthManager(private val context: Context) {
                         onSuccess()
                     }
                 })
-                .build()
 
-            PhoneAuthProvider.verifyPhoneNumber(options)
+            resendToken?.let { token ->
+                optionsBuilder.setForceResendingToken(token)
+            }
+
+            PhoneAuthProvider.verifyPhoneNumber(optionsBuilder.build())
         } catch (e: Exception) {
-            Log.w(TAG, "Error initiating phone verification: ${e.localizedMessage}")
-            val demoVerificationId = "demo_ver_id_${System.currentTimeMillis()}"
-            currentVerificationId = demoVerificationId
-            _authState.value = AuthState.CodeSent(demoVerificationId, phoneNumber)
-            onSuccess()
+            Log.e(TAG, "Error initiating phone verification: ${e.localizedMessage}", e)
+            val errorMsg = e.localizedMessage ?: "Unable to send OTP. Please try again."
+            _authState.value = AuthState.Error(errorMsg)
+            onError(errorMsg)
         }
     }
 
@@ -157,28 +161,21 @@ class AuthManager(private val context: Context) {
      */
     fun verifyOtp(
         otpCode: String,
-        onSuccess: () -> Unit,
-        onError: (String) -> Unit
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
     ) {
         val verId = currentVerificationId
         val currentState = _authState.value
         val phone = if (currentState is AuthState.CodeSent) currentState.phoneNumber else ""
 
-        _authState.value = AuthState.VerificationInProgress("Verifying 6-digit OTP...")
-
-        if (verId != null && verId.startsWith("demo_ver_id_")) {
-            // Demo mode / fallback test verification
-            if (otpCode.length == 6) {
-                val demoUid = "talkly_user_${phone.replace("+", "").replace(" ", "")}"
-                saveLocalSession(demoUid, phone = phone, name = "", pic = "")
-                checkUserProfileInFirestore(demoUid, phone)
-                onSuccess()
+        if (otpCode.length != 6 || !otpCode.all { it.isDigit() }) {
+            val msg = "Please enter a valid 6-digit OTP code"
+            if (verId != null) {
+                _authState.value = AuthState.CodeSent(verId, phone, error = msg)
             } else {
-                _authState.value = AuthState.CodeSent(verId, phone)
-                val msg = "Please enter a valid 6-digit OTP code"
                 _authState.value = AuthState.Error(msg)
-                onError(msg)
             }
+            onError(msg)
             return
         }
 
@@ -189,22 +186,16 @@ class AuthManager(private val context: Context) {
             return
         }
 
+        _authState.value = AuthState.VerificationInProgress("Verifying 6-digit OTP...")
+
         try {
             val credential = PhoneAuthProvider.getCredential(verId, otpCode)
             signInWithPhoneCredential(credential, phone, onSuccess, onError)
         } catch (e: Exception) {
-            Log.w(TAG, "Phone credential creation failed: ${e.localizedMessage}")
-            // Fallback verify for demo testing
-            if (otpCode.length == 6) {
-                val demoUid = "talkly_user_${phone.replace("+", "").replace(" ", "")}"
-                saveLocalSession(demoUid, phone = phone, name = "", pic = "")
-                checkUserProfileInFirestore(demoUid, phone)
-                onSuccess()
-            } else {
-                val errorMsg = e.localizedMessage ?: "Invalid OTP code"
-                _authState.value = AuthState.Error(errorMsg)
-                onError(errorMsg)
-            }
+            Log.w(TAG, "Phone credential creation failed: ${e.localizedMessage}", e)
+            val errorMsg = e.localizedMessage ?: "Invalid OTP code"
+            _authState.value = AuthState.CodeSent(verId, phone, error = errorMsg)
+            onError(errorMsg)
         }
     }
 
@@ -214,30 +205,48 @@ class AuthManager(private val context: Context) {
         onSuccess: (() -> Unit)? = null,
         onError: ((String) -> Unit)? = null
     ) {
+        val verId = currentVerificationId ?: ""
         try {
             firebaseAuth.signInWithCredential(credential)
                 .addOnCompleteListener { task ->
                     if (task.isSuccessful) {
                         val user = task.result?.user
-                        val uid = user?.uid ?: "talkly_uid_${System.currentTimeMillis()}"
-                        val phone = user?.phoneNumber ?: phoneNumber
-                        Log.d(TAG, "Firebase phone sign in successful. UID: $uid")
-                        checkUserProfileInFirestore(uid, phone)
-                        onSuccess?.invoke()
+                        if (user != null) {
+                            val uid = user.uid
+                            val phone = user.phoneNumber ?: phoneNumber
+                            Log.d(TAG, "Firebase phone sign in successful. UID: $uid, Phone: $phone")
+                            checkUserProfileInFirestore(uid, phone)
+                            onSuccess?.invoke()
+                        } else {
+                            val errorMsg = "Authentication succeeded but user is null."
+                            if (verId.isNotEmpty()) {
+                                _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
+                            } else {
+                                _authState.value = AuthState.Error(errorMsg)
+                            }
+                            onError?.invoke(errorMsg)
+                        }
                     } else {
                         val e = task.exception
-                        Log.w(TAG, "Firebase sign in with credential failed: ${e?.localizedMessage}")
-                        // Fallback demo sign-in
-                        val demoUid = "talkly_uid_${phoneNumber.replace("+", "")}"
-                        checkUserProfileInFirestore(demoUid, phoneNumber)
-                        onSuccess?.invoke()
+                        Log.w(TAG, "Firebase sign in with credential failed: ${e?.localizedMessage}", e)
+                        val errorMsg = e?.localizedMessage ?: "Invalid OTP code or verification failed."
+                        if (verId.isNotEmpty()) {
+                            _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
+                        } else {
+                            _authState.value = AuthState.Error(errorMsg)
+                        }
+                        onError?.invoke(errorMsg)
                     }
                 }
         } catch (e: Exception) {
-            Log.w(TAG, "Firebase Auth sign-in exception: ${e.localizedMessage}")
-            val demoUid = "talkly_uid_${phoneNumber.replace("+", "")}"
-            checkUserProfileInFirestore(demoUid, phoneNumber)
-            onSuccess?.invoke()
+            Log.e(TAG, "Firebase Auth sign-in exception: ${e.localizedMessage}", e)
+            val errorMsg = e.localizedMessage ?: "Authentication failed. Please try again."
+            if (verId.isNotEmpty()) {
+                _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
+            } else {
+                _authState.value = AuthState.Error(errorMsg)
+            }
+            onError?.invoke(errorMsg)
         }
     }
 

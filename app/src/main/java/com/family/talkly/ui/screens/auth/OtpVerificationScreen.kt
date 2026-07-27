@@ -248,39 +248,6 @@ fun OtpVerificationScreen(
                         textAlign = TextAlign.Center
                     )
                 }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Test OTP Helper Chip
-                Surface(
-                    color = WhatsappTeal.copy(alpha = 0.1f),
-                    shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.clickable {
-                        keyboardController?.hide()
-                        focusManager.clearFocus()
-                        otpCodeInput = "123456"
-                        onVerifyOtp("123456")
-                    }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = WhatsappTeal,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Test Mode OTP: 123456 (Tap to Auto-Fill)",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = WhatsappTeal
-                        )
-                    }
-                }
             }
 
             // Bottom Actions: Resend Code & Verify Button
