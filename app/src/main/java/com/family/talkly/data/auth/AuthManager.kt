@@ -43,28 +43,18 @@ class AuthManager(private val context: Context) {
         private const val KEY_BIO = "user_bio"
     }
 
-    private fun getFirebaseAuth(): FirebaseAuth? {
-        return try {
-            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
-                com.google.firebase.FirebaseApp.initializeApp(context)
-            }
-            FirebaseAuth.getInstance()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get FirebaseAuth instance: ${e.localizedMessage}", e)
-            null
+    private fun getFirebaseAuth(): FirebaseAuth {
+        if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+            com.google.firebase.FirebaseApp.initializeApp(context)
         }
+        return FirebaseAuth.getInstance()
     }
 
-    private fun getFirestore(): FirebaseFirestore? {
-        return try {
-            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
-                com.google.firebase.FirebaseApp.initializeApp(context)
-            }
-            FirebaseFirestore.getInstance()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get FirebaseFirestore instance: ${e.localizedMessage}", e)
-            null
+    private fun getFirestore(): FirebaseFirestore {
+        if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+            com.google.firebase.FirebaseApp.initializeApp(context)
         }
+        return FirebaseFirestore.getInstance()
     }
 
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -86,7 +76,7 @@ class AuthManager(private val context: Context) {
         try {
             val isLoggedIn = prefs.getBoolean(KEY_IS_LOGGED_IN, false)
             val savedUid = prefs.getString(KEY_UID, null)
-            val firebaseUser = try { getFirebaseAuth()?.currentUser } catch (e: Exception) { null }
+            val firebaseUser = try { getFirebaseAuth().currentUser } catch (e: Exception) { null }
 
             if (isLoggedIn && !savedUid.isNullOrEmpty()) {
                 val name = prefs.getString(KEY_NAME, "") ?: ""
@@ -128,17 +118,10 @@ class AuthManager(private val context: Context) {
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
-        val auth = getFirebaseAuth()
-        if (auth == null) {
-            val errorMsg = "Firebase Authentication is not initialized on this device."
-            _authState.value = AuthState.Error(errorMsg)
-            onError(errorMsg)
-            return
-        }
-
         _authState.value = AuthState.VerificationInProgress("Sending OTP to $phoneNumber...")
 
         try {
+            val auth = getFirebaseAuth()
             val optionsBuilder = PhoneAuthOptions.newBuilder(auth)
                 .setPhoneNumber(phoneNumber)
                 .setTimeout(60L, TimeUnit.SECONDS)
@@ -156,7 +139,7 @@ class AuthManager(private val context: Context) {
 
                     override fun onVerificationFailed(e: FirebaseException) {
                         Log.w(TAG, "Firebase phone verification failed: ${e.localizedMessage}", e)
-                        val errorMsg = e.localizedMessage ?: "Phone verification failed. Please check the number."
+                        val errorMsg = e.localizedMessage ?: e.message ?: "Phone verification failed. Please check the number."
                         _authState.value = AuthState.Error(errorMsg)
                         onError(errorMsg)
                     }
@@ -180,7 +163,7 @@ class AuthManager(private val context: Context) {
             PhoneAuthProvider.verifyPhoneNumber(optionsBuilder.build())
         } catch (e: Exception) {
             Log.e(TAG, "Error initiating phone verification: ${e.localizedMessage}", e)
-            val errorMsg = e.localizedMessage ?: "Unable to send OTP. Please try again."
+            val errorMsg = e.localizedMessage ?: e.message ?: "Unable to send OTP. Please try again."
             _authState.value = AuthState.Error(errorMsg)
             onError(errorMsg)
         }
@@ -236,19 +219,8 @@ class AuthManager(private val context: Context) {
         onError: ((String) -> Unit)? = null
     ) {
         val verId = currentVerificationId ?: ""
-        val auth = getFirebaseAuth()
-        if (auth == null) {
-            val errorMsg = "Firebase Auth is not available."
-            if (verId.isNotEmpty()) {
-                _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
-            } else {
-                _authState.value = AuthState.Error(errorMsg)
-            }
-            onError?.invoke(errorMsg)
-            return
-        }
-
         try {
+            val auth = getFirebaseAuth()
             auth.signInWithCredential(credential)
                 .addOnCompleteListener { task ->
                     if (task.isSuccessful) {
@@ -271,7 +243,7 @@ class AuthManager(private val context: Context) {
                     } else {
                         val e = task.exception
                         Log.w(TAG, "Firebase sign in with credential failed: ${e?.localizedMessage}", e)
-                        val errorMsg = e?.localizedMessage ?: "Invalid OTP code or verification failed."
+                        val errorMsg = e?.localizedMessage ?: e?.message ?: "Invalid OTP code or verification failed."
                         if (verId.isNotEmpty()) {
                             _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
                         } else {
@@ -282,7 +254,7 @@ class AuthManager(private val context: Context) {
                 }
         } catch (e: Exception) {
             Log.e(TAG, "Firebase Auth sign-in exception: ${e.localizedMessage}", e)
-            val errorMsg = e.localizedMessage ?: "Authentication failed. Please try again."
+            val errorMsg = e.localizedMessage ?: e.message ?: "Authentication failed. Please try again."
             if (verId.isNotEmpty()) {
                 _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
             } else {
@@ -296,14 +268,8 @@ class AuthManager(private val context: Context) {
      * Checks Firestore 'users/{uid}' collection to see if user has completed profile setup
      */
     private fun checkUserProfileInFirestore(uid: String, phoneNumber: String) {
-        val db = getFirestore()
-        if (db == null) {
-            saveLocalSession(uid, "", phoneNumber, "", "")
-            _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
-            return
-        }
-
         try {
+            val db = getFirestore()
             db.collection("users").document(uid).get()
                 .addOnSuccessListener { doc ->
                     if (doc != null && doc.exists() && !doc.getString("name").isNullOrBlank()) {
@@ -382,12 +348,12 @@ class AuthManager(private val context: Context) {
         )
 
         try {
-            getFirestore()?.collection("users")?.document(uid)
-                ?.set(profileMap)
-                ?.addOnSuccessListener {
+            getFirestore().collection("users").document(uid)
+                .set(profileMap)
+                .addOnSuccessListener {
                     Log.d(TAG, "Saved user profile to Firestore successfully")
                 }
-                ?.addOnFailureListener { e ->
+                .addOnFailureListener { e ->
                     Log.w(TAG, "Firestore user profile write failed: ${e.localizedMessage}")
                 }
         } catch (e: Exception) {
@@ -408,7 +374,7 @@ class AuthManager(private val context: Context) {
 
     fun logout() {
         try {
-            getFirebaseAuth()?.signOut()
+            getFirebaseAuth().signOut()
         } catch (e: Exception) {
             Log.w(TAG, "Sign out exception: ${e.localizedMessage}")
         }
