@@ -41,8 +41,16 @@ class ZegoCallEngineManager(private val context: Context) {
 
     companion object {
         const val TAG = "Talkly_ZegoEngine"
-        const val ZEGO_APP_ID: Long = 2119647829L
-        const val ZEGO_APP_SIGN: String = "f7b21c961d9ae91fc3ca9ee453c6ff4027c451e93e59ceaeeecfcafd29bdc872"
+        val ZEGO_APP_ID: Long = try {
+            com.family.talkly.BuildConfig.ZEGO_APP_ID.toString().toLongOrNull() ?: 2119647829L
+        } catch (e: Exception) {
+            2119647829L
+        }
+        val ZEGO_APP_SIGN: String = try {
+            com.family.talkly.BuildConfig.ZEGO_APP_SIGN.ifEmpty { "f7b21c961d9ae91fc3ca9ee453c6ff4027c451e93e59ceaeeecfcafd29bdc872" }
+        } catch (e: Exception) {
+            "f7b21c961d9ae91fc3ca9ee453c6ff4027c451e93e59ceaeeecfcafd29bdc872"
+        }
         const val FIREBASE_PROJECT_ID: String = "familycallapp-e6b21"
     }
 
