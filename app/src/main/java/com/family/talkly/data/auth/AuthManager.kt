@@ -1,30 +1,21 @@
 package com.family.talkly.data.auth
 
-import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import com.family.talkly.data.models.UserProfile
-import com.google.firebase.FirebaseException
+import com.family.talkly.util.PhoneUtils
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.PhoneAuthCredential
-import com.google.firebase.auth.PhoneAuthOptions
-import com.google.firebase.auth.PhoneAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.util.concurrent.TimeUnit
 
 sealed class AuthState {
     object InitialCheck : AuthState()
     object Unauthenticated : AuthState()
-    data class CodeSent(
-        val verificationId: String,
-        val phoneNumber: String,
-        val error: String? = null
-    ) : AuthState()
-    data class VerificationInProgress(val message: String = "Verifying OTP...") : AuthState()
+    data class VerificationInProgress(val message: String = "Authenticating...") : AuthState()
     data class ProfileSetupRequired(val uid: String, val phoneNumber: String) : AuthState()
     data class Authenticated(val profile: UserProfile) : AuthState()
     data class Error(val message: String) : AuthState()
@@ -41,6 +32,14 @@ class AuthManager(private val context: Context) {
         private const val KEY_PHONE = "user_phone"
         private const val KEY_PROFILE_PIC = "user_profile_pic"
         private const val KEY_BIO = "user_bio"
+
+        /**
+         * Converts phone number into a deterministic internal email address for Firebase Auth
+         */
+        fun getInternalEmail(phoneNumber: String): String {
+            val cleanNumber = phoneNumber.replace("+", "").replace(" ", "").replace("-", "").trim()
+            return "${cleanNumber}@talkly.app"
+        }
     }
 
     private fun ensureFirebase() {
@@ -78,11 +77,14 @@ class AuthManager(private val context: Context) {
     private val _authState = MutableStateFlow<AuthState>(AuthState.InitialCheck)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
-    private var currentVerificationId: String? = null
-    private var resendToken: PhoneAuthProvider.ForceResendingToken? = null
-
     init {
         checkCurrentSession()
+    }
+
+    fun clearError() {
+        if (_authState.value is AuthState.Error) {
+            _authState.value = AuthState.Unauthenticated
+        }
     }
 
     /**
@@ -114,7 +116,7 @@ class AuthManager(private val context: Context) {
                 }
             } else if (firebaseUser != null) {
                 val uid = firebaseUser.uid
-                val phone = firebaseUser.phoneNumber ?: ""
+                val phone = firebaseUser.phoneNumber ?: prefs.getString(KEY_PHONE, "") ?: ""
                 checkUserProfileInFirestore(uid, phone)
             } else {
                 _authState.value = AuthState.Unauthenticated
@@ -126,157 +128,215 @@ class AuthManager(private val context: Context) {
     }
 
     /**
-     * Sends 6-digit OTP code to mobile number via Firebase Phone Auth
+     * Registers a new user with Mobile Phone Number and Password
      */
-    fun sendOtp(
-        activity: Activity,
+    fun signUpWithPhoneAndPassword(
         phoneNumber: String,
+        password: String,
+        name: String,
+        profilePicUrl: String = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop",
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
-        _authState.value = AuthState.VerificationInProgress("Sending OTP to $phoneNumber...")
+        if (phoneNumber.isBlank() || password.isBlank() || name.isBlank()) {
+            val err = "Please enter your name, phone number, and password."
+            _authState.value = AuthState.Error(err)
+            onError(err)
+            return
+        }
+
+        if (password.length < 6) {
+            val err = "Password must be at least 6 characters long."
+            _authState.value = AuthState.Error(err)
+            onError(err)
+            return
+        }
+
+        val internalEmail = getInternalEmail(phoneNumber)
+        _authState.value = AuthState.VerificationInProgress("Creating user account...")
 
         try {
-            val auth = getFirebaseAuth()
-            val optionsBuilder = PhoneAuthOptions.newBuilder(auth)
-                .setPhoneNumber(phoneNumber)
-                .setTimeout(60L, TimeUnit.SECONDS)
-                .setActivity(activity)
-                .setCallbacks(object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
-                    override fun onVerificationCompleted(credential: PhoneAuthCredential) {
-                        Log.d(TAG, "Phone verification completed automatically")
-                        val code = credential.smsCode
-                        if (code != null && currentVerificationId != null) {
-                            verifyOtp(code, onSuccess, onError)
+            getFirebaseAuth().createUserWithEmailAndPassword(internalEmail, password)
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        val user = task.result?.user
+                        val uid = user?.uid
+                        if (uid != null) {
+                            Log.d(TAG, "Registration successful for phone $phoneNumber ($internalEmail), UID: $uid")
+                            saveUserProfileAndAuthenticate(uid, name, phoneNumber, profilePicUrl, onSuccess, onError)
                         } else {
-                            signInWithPhoneCredential(credential, phoneNumber, onSuccess, onError)
+                            val err = "Account created, but user session was null."
+                            _authState.value = AuthState.Error(err)
+                            onError(err)
                         }
+                    } else {
+                        val rawErr = task.exception?.message ?: "Registration failed."
+                        val formatted = when {
+                            rawErr.contains("already in use", ignoreCase = true) ||
+                            rawErr.contains("email-already-in-use", ignoreCase = true) ->
+                                "An account with this phone number already exists. Please sign in instead."
+                            rawErr.contains("badly formatted", ignoreCase = true) ||
+                            rawErr.contains("invalid-email", ignoreCase = true) ->
+                                "Invalid mobile phone number format."
+                            rawErr.contains("weak-password", ignoreCase = true) ->
+                                "Password is too weak. Please use at least 6 characters."
+                            else -> rawErr
+                        }
+                        _authState.value = AuthState.Error(formatted)
+                        onError(formatted)
                     }
-
-                    override fun onVerificationFailed(e: FirebaseException) {
-                        Log.w(TAG, "Firebase phone verification failed: ${e.localizedMessage}", e)
-                        val errorMsg = e.localizedMessage ?: e.message ?: "Phone verification failed. Please check the number."
-                        _authState.value = AuthState.Error(errorMsg)
-                        onError(errorMsg)
-                    }
-
-                    override fun onCodeSent(
-                        verificationId: String,
-                        token: PhoneAuthProvider.ForceResendingToken
-                    ) {
-                        Log.d(TAG, "OTP Code sent successfully. VerificationId: $verificationId")
-                        currentVerificationId = verificationId
-                        resendToken = token
-                        _authState.value = AuthState.CodeSent(verificationId, phoneNumber)
-                        onSuccess()
-                    }
-                })
-
-            resendToken?.let { token ->
-                optionsBuilder.setForceResendingToken(token)
-            }
-
-            PhoneAuthProvider.verifyPhoneNumber(optionsBuilder.build())
+                }
         } catch (e: Exception) {
-            Log.e(TAG, "Error initiating phone verification: ${e.localizedMessage}", e)
-            val errorMsg = e.localizedMessage ?: e.message ?: "Unable to send OTP. Please try again."
-            _authState.value = AuthState.Error(errorMsg)
-            onError(errorMsg)
+            Log.e(TAG, "Sign up exception: ${e.localizedMessage}", e)
+            val err = e.localizedMessage ?: "Registration error. Please try again."
+            _authState.value = AuthState.Error(err)
+            onError(err)
         }
     }
 
     /**
-     * Verifies the 6-digit OTP entered by the user
+     * Signs in an existing user with Mobile Phone Number and Password
      */
-    fun verifyOtp(
-        otpCode: String,
+    fun signInWithPhoneAndPassword(
+        phoneNumber: String,
+        password: String,
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
-        val verId = currentVerificationId
-        val currentState = _authState.value
-        val phone = if (currentState is AuthState.CodeSent) currentState.phoneNumber else ""
-
-        if (otpCode.length != 6 || !otpCode.all { it.isDigit() }) {
-            val msg = "Please enter a valid 6-digit OTP code"
-            if (verId != null) {
-                _authState.value = AuthState.CodeSent(verId, phone, error = msg)
-            } else {
-                _authState.value = AuthState.Error(msg)
-            }
-            onError(msg)
+        if (phoneNumber.isBlank() || password.isBlank()) {
+            val err = "Please enter both mobile phone number and password."
+            _authState.value = AuthState.Error(err)
+            onError(err)
             return
         }
 
-        if (verId == null) {
-            val msg = "Verification ID missing. Please resend code."
-            _authState.value = AuthState.Error(msg)
-            onError(msg)
-            return
-        }
-
-        _authState.value = AuthState.VerificationInProgress("Verifying 6-digit OTP...")
+        val internalEmail = getInternalEmail(phoneNumber)
+        _authState.value = AuthState.VerificationInProgress("Signing in...")
 
         try {
-            val credential = PhoneAuthProvider.getCredential(verId, otpCode)
-            signInWithPhoneCredential(credential, phone, onSuccess, onError)
-        } catch (e: Exception) {
-            Log.w(TAG, "Phone credential creation failed: ${e.localizedMessage}", e)
-            val errorMsg = e.localizedMessage ?: "Invalid OTP code"
-            _authState.value = AuthState.CodeSent(verId, phone, error = errorMsg)
-            onError(errorMsg)
-        }
-    }
-
-    private fun signInWithPhoneCredential(
-        credential: PhoneAuthCredential,
-        phoneNumber: String,
-        onSuccess: (() -> Unit)? = null,
-        onError: ((String) -> Unit)? = null
-    ) {
-        val verId = currentVerificationId ?: ""
-        try {
-            val auth = getFirebaseAuth()
-            auth.signInWithCredential(credential)
+            getFirebaseAuth().signInWithEmailAndPassword(internalEmail, password)
                 .addOnCompleteListener { task ->
                     if (task.isSuccessful) {
                         val user = task.result?.user
-                        if (user != null) {
-                            val uid = user.uid
-                            val phone = user.phoneNumber ?: phoneNumber
-                            Log.d(TAG, "Firebase phone sign in successful. UID: $uid, Phone: $phone")
-                            checkUserProfileInFirestore(uid, phone)
-                            onSuccess?.invoke()
+                        val uid = user?.uid
+                        if (uid != null) {
+                            Log.d(TAG, "Sign in successful for phone $phoneNumber ($internalEmail), UID: $uid")
+                            checkUserProfileInFirestore(uid, phoneNumber)
+                            onSuccess()
                         } else {
-                            val errorMsg = "Authentication succeeded but user is null."
-                            if (verId.isNotEmpty()) {
-                                _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
-                            } else {
-                                _authState.value = AuthState.Error(errorMsg)
-                            }
-                            onError?.invoke(errorMsg)
+                            val err = "Authentication succeeded but user session is null."
+                            _authState.value = AuthState.Error(err)
+                            onError(err)
                         }
                     } else {
-                        val e = task.exception
-                        Log.w(TAG, "Firebase sign in with credential failed: ${e?.localizedMessage}", e)
-                        val errorMsg = e?.localizedMessage ?: e?.message ?: "Invalid OTP code or verification failed."
-                        if (verId.isNotEmpty()) {
-                            _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
-                        } else {
-                            _authState.value = AuthState.Error(errorMsg)
+                        val rawErr = task.exception?.message ?: "Authentication failed."
+                        val formatted = when {
+                            rawErr.contains("no user record", ignoreCase = true) ||
+                            rawErr.contains("user-not-found", ignoreCase = true) ->
+                                "No account found with this phone number. Please register first."
+                            rawErr.contains("invalid-credential", ignoreCase = true) ||
+                            rawErr.contains("wrong-password", ignoreCase = true) ||
+                            rawErr.contains("invalid password", ignoreCase = true) ->
+                                "Incorrect password. Please try again."
+                            else -> rawErr
                         }
-                        onError?.invoke(errorMsg)
+                        _authState.value = AuthState.Error(formatted)
+                        onError(formatted)
                     }
                 }
         } catch (e: Exception) {
-            Log.e(TAG, "Firebase Auth sign-in exception: ${e.localizedMessage}", e)
-            val errorMsg = e.localizedMessage ?: e.message ?: "Authentication failed. Please try again."
-            if (verId.isNotEmpty()) {
-                _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
-            } else {
-                _authState.value = AuthState.Error(errorMsg)
-            }
-            onError?.invoke(errorMsg)
+            Log.e(TAG, "Sign in exception: ${e.localizedMessage}", e)
+            val err = e.localizedMessage ?: "Sign in error. Please try again."
+            _authState.value = AuthState.Error(err)
+            onError(err)
+        }
+    }
+
+    /**
+     * Triggers Firebase sendPasswordResetEmail using mapped internal email address for phone number
+     */
+    fun sendPasswordResetForPhone(
+        phoneNumber: String,
+        onSuccess: (String) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        if (phoneNumber.isBlank()) {
+            val err = "Please enter your mobile phone number."
+            onError(err)
+            return
+        }
+
+        val internalEmail = getInternalEmail(phoneNumber)
+
+        try {
+            getFirebaseAuth().sendPasswordResetEmail(internalEmail)
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        Log.d(TAG, "Password reset email sent to internal email: $internalEmail for phone $phoneNumber")
+                        onSuccess("Password reset instructions sent for account linked to $phoneNumber.")
+                    } else {
+                        val rawErr = task.exception?.message ?: "Password reset failed."
+                        val formatted = when {
+                            rawErr.contains("no user record", ignoreCase = true) ||
+                            rawErr.contains("user-not-found", ignoreCase = true) ->
+                                "No registered account found with mobile number $phoneNumber."
+                            rawErr.contains("invalid-email", ignoreCase = true) ->
+                                "Invalid phone number format."
+                            else -> rawErr
+                        }
+                        onError(formatted)
+                    }
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Password reset exception: ${e.localizedMessage}", e)
+            onError(e.localizedMessage ?: "Failed to request password reset. Please try again.")
+        }
+    }
+
+    private fun saveUserProfileAndAuthenticate(
+        uid: String,
+        name: String,
+        phoneNumber: String,
+        profilePicUrl: String,
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        val bio = "Available on Talkly 💬"
+        val phoneSuffix = PhoneUtils.extractPhoneSuffix(phoneNumber)
+        saveLocalSession(uid, name, phoneNumber, profilePicUrl, bio)
+        val profile = UserProfile(
+            uid = uid,
+            name = name,
+            phoneNumber = phoneNumber,
+            phoneSuffix = phoneSuffix,
+            profilePicUrl = profilePicUrl,
+            bio = bio
+        )
+        _authState.value = AuthState.Authenticated(profile)
+        onSuccess()
+
+        val profileMap = mapOf(
+            "uid" to uid,
+            "name" to name,
+            "phoneNumber" to phoneNumber,
+            "phoneSuffix" to phoneSuffix,
+            "email" to getInternalEmail(phoneNumber),
+            "profilePicUrl" to profilePicUrl,
+            "bio" to bio,
+            "createdAt" to System.currentTimeMillis()
+        )
+
+        try {
+            getFirestore().collection("users").document(uid)
+                .set(profileMap, SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.d(TAG, "User profile saved to Firestore successfully")
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Failed to write user profile to Firestore: ${e.localizedMessage}")
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Firestore write exception: ${e.localizedMessage}")
         }
     }
 
@@ -284,6 +344,29 @@ class AuthManager(private val context: Context) {
      * Checks Firestore 'users/{uid}' collection to see if user has completed profile setup
      */
     private fun checkUserProfileInFirestore(uid: String, phoneNumber: String) {
+        // Upsert user phone and suffix on login
+        val digitsOnly = phoneNumber.filter { it.isDigit() }
+        val suffix = if (digitsOnly.length >= 10) digitsOnly.takeLast(10) else digitsOnly
+
+        val userData = mapOf(
+            "uid" to uid,
+            "phoneNumber" to phoneNumber,
+            "phoneSuffix" to suffix
+        )
+
+        try {
+            getFirestore().collection("users").document(uid)
+                .set(userData, SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.d(TAG, "Upserted login phone info for uid $uid (phone: $phoneNumber, suffix: $suffix)")
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Failed upserting login phone info: ${e.localizedMessage}")
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Login upsert exception: ${e.localizedMessage}")
+        }
+
         try {
             val db = getFirestore()
             db.collection("users").document(uid).get()
@@ -291,12 +374,14 @@ class AuthManager(private val context: Context) {
                     if (doc != null && doc.exists() && !doc.getString("name").isNullOrBlank()) {
                         val name = doc.getString("name") ?: ""
                         val phone = doc.getString("phoneNumber") ?: phoneNumber
+                        val docSuffix = doc.getString("phoneSuffix") ?: PhoneUtils.extractPhoneSuffix(phone)
                         val pic = doc.getString("profilePicUrl") ?: ""
                         val bio = doc.getString("bio") ?: "Available on Talkly 💬"
                         val profile = UserProfile(
                             uid = uid,
                             name = name,
                             phoneNumber = phone,
+                            phoneSuffix = docSuffix,
                             profilePicUrl = pic,
                             bio = bio
                         )
@@ -348,9 +433,16 @@ class AuthManager(private val context: Context) {
             return
         }
 
-        // Save local session immediately & authenticate to prevent hanging on network/Firestore latency
+        val phoneSuffix = PhoneUtils.extractPhoneSuffix(phone)
         saveLocalSession(uid, name, phone, profilePicUrl, bio)
-        val profile = UserProfile(uid, name, phone, profilePicUrl, bio)
+        val profile = UserProfile(
+            uid = uid,
+            name = name,
+            phoneNumber = phone,
+            phoneSuffix = phoneSuffix,
+            profilePicUrl = profilePicUrl,
+            bio = bio
+        )
         _authState.value = AuthState.Authenticated(profile)
         onSuccess()
 
@@ -358,6 +450,8 @@ class AuthManager(private val context: Context) {
             "uid" to uid,
             "name" to name,
             "phoneNumber" to phone,
+            "phoneSuffix" to phoneSuffix,
+            "email" to getInternalEmail(phone),
             "profilePicUrl" to profilePicUrl,
             "bio" to bio,
             "createdAt" to System.currentTimeMillis()
@@ -365,7 +459,7 @@ class AuthManager(private val context: Context) {
 
         try {
             getFirestore().collection("users").document(uid)
-                .set(profileMap)
+                .set(profileMap, SetOptions.merge())
                 .addOnSuccessListener {
                     Log.d(TAG, "Saved user profile to Firestore successfully")
                 }

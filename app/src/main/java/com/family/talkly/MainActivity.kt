@@ -30,8 +30,7 @@ import com.family.talkly.data.firebase.FirebaseChatRepository
 import com.family.talkly.data.zego.ZegoCallEngineManager
 import com.family.talkly.ui.components.AuthLoadingState
 import com.family.talkly.ui.screens.MainScreen
-import com.family.talkly.ui.screens.auth.OtpVerificationScreen
-import com.family.talkly.ui.screens.auth.PhoneInputScreen
+import com.family.talkly.ui.screens.auth.PhonePasswordAuthScreen
 import com.family.talkly.ui.screens.auth.ProfileSetupScreen
 import com.family.talkly.ui.theme.TalklyTheme
 import com.family.talkly.ui.theme.ThemePreferences
@@ -87,42 +86,28 @@ class MainActivity : ComponentActivity() {
                         }
 
                         is AuthState.Unauthenticated -> {
-                            PhoneInputScreen(
+                            PhonePasswordAuthScreen(
                                 isLoading = false,
                                 errorMessage = null,
-                                onSendOtp = { phoneNumber ->
-                                    authManager.sendOtp(
-                                        activity = this@MainActivity,
-                                        phoneNumber = phoneNumber,
-                                        onSuccess = {},
-                                        onError = {}
-                                    )
-                                }
-                            )
-                        }
-
-                        is AuthState.CodeSent -> {
-                            OtpVerificationScreen(
-                                phoneNumber = state.phoneNumber,
-                                isLoading = false,
-                                errorMessage = state.error,
-                                onVerifyOtp = { otpCode ->
-                                    authManager.verifyOtp(
-                                        otpCode = otpCode,
-                                        onSuccess = {},
-                                        onError = {}
+                                onSignIn = { phone, password ->
+                                    authManager.signInWithPhoneAndPassword(phone, password)
+                                },
+                                onSignUp = { phone, password, name ->
+                                    authManager.signUpWithPhoneAndPassword(
+                                        phoneNumber = phone,
+                                        password = password,
+                                        name = name
                                     )
                                 },
-                                onResendOtp = {
-                                    authManager.sendOtp(
-                                        activity = this@MainActivity,
-                                        phoneNumber = state.phoneNumber,
-                                        onSuccess = {},
-                                        onError = {}
+                                onForgotPassword = { phone, onSuccess, onError ->
+                                    authManager.sendPasswordResetForPhone(
+                                        phoneNumber = phone,
+                                        onSuccess = onSuccess,
+                                        onError = onError
                                     )
                                 },
-                                onBackToPhoneInput = {
-                                    authManager.checkCurrentSession()
+                                onClearError = {
+                                    authManager.clearError()
                                 }
                             )
                         }
@@ -173,17 +158,28 @@ class MainActivity : ComponentActivity() {
                         }
 
                         is AuthState.Error -> {
-                            // Show error overlay with retry option
-                            PhoneInputScreen(
+                            PhonePasswordAuthScreen(
                                 isLoading = false,
                                 errorMessage = state.message,
-                                onSendOtp = { phoneNumber ->
-                                    authManager.sendOtp(
-                                        activity = this@MainActivity,
-                                        phoneNumber = phoneNumber,
-                                        onSuccess = {},
-                                        onError = {}
+                                onSignIn = { phone, password ->
+                                    authManager.signInWithPhoneAndPassword(phone, password)
+                                },
+                                onSignUp = { phone, password, name ->
+                                    authManager.signUpWithPhoneAndPassword(
+                                        phoneNumber = phone,
+                                        password = password,
+                                        name = name
                                     )
+                                },
+                                onForgotPassword = { phone, onSuccess, onError ->
+                                    authManager.sendPasswordResetForPhone(
+                                        phoneNumber = phone,
+                                        onSuccess = onSuccess,
+                                        onError = onError
+                                    )
+                                },
+                                onClearError = {
+                                    authManager.clearError()
                                 }
                             )
                         }

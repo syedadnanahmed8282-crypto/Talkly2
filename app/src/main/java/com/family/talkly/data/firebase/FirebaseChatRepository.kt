@@ -170,38 +170,71 @@ class FirebaseChatRepository(private val context: Context) {
     }
 
     fun searchTalklyUserByPhone(phone: String, onResult: (com.family.talkly.data.models.UserProfile?) -> Unit) {
-        val cleanPhone = phone.trim().replace(" ", "").replace("-", "")
-        if (cleanPhone.isBlank()) {
+        val targetSuffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(phone)
+        val cleanPhone = com.family.talkly.util.PhoneUtils.cleanPhoneNumber(phone)
+        if (targetSuffix.isBlank()) {
             onResult(null)
             return
         }
 
         try {
             firestore?.collection("users")
+                ?.whereEqualTo("phoneSuffix", targetSuffix)
                 ?.get()
                 ?.addOnSuccessListener { snapshot ->
                     if (snapshot != null && !snapshot.isEmpty) {
-                        for (doc in snapshot.documents) {
-                            val userPhone = (doc.getString("phoneNumber") ?: "").trim().replace(" ", "").replace("-", "")
-                            val docUid = doc.id
-                            if (userPhone.contains(cleanPhone) || cleanPhone.contains(userPhone) || docUid == cleanPhone) {
-                                val name = doc.getString("name") ?: "Talkly User"
-                                val rawPhone = doc.getString("phoneNumber") ?: phone
-                                val pic = doc.getString("profilePicUrl") ?: ""
-                                val bio = doc.getString("bio") ?: "Available on Talkly 💬"
-                                val profile = com.family.talkly.data.models.UserProfile(
-                                    uid = docUid,
-                                    name = name,
-                                    phoneNumber = rawPhone,
-                                    profilePicUrl = pic,
-                                    bio = bio
-                                )
-                                onResult(profile)
-                                return@addOnSuccessListener
+                        val doc = snapshot.documents.first()
+                        val docUid = doc.id
+                        val name = doc.getString("name") ?: "Talkly User"
+                        val rawPhone = doc.getString("phoneNumber") ?: phone
+                        val docSuffix = doc.getString("phoneSuffix") ?: targetSuffix
+                        val pic = doc.getString("profilePicUrl") ?: ""
+                        val bio = doc.getString("bio") ?: "Available on Talkly 💬"
+                        val profile = com.family.talkly.data.models.UserProfile(
+                            uid = docUid,
+                            name = name,
+                            phoneNumber = rawPhone,
+                            phoneSuffix = docSuffix,
+                            profilePicUrl = pic,
+                            bio = bio
+                        )
+                        onResult(profile)
+                    } else {
+                        // Fallback check across all users if phoneSuffix was not yet stored on older user documents
+                        firestore?.collection("users")
+                            ?.get()
+                            ?.addOnSuccessListener { fullSnapshot ->
+                                if (fullSnapshot != null && !fullSnapshot.isEmpty) {
+                                    for (doc in fullSnapshot.documents) {
+                                        val rawUserPhone = doc.getString("phoneNumber") ?: ""
+                                        val docSuffix = doc.getString("phoneSuffix") ?: com.family.talkly.util.PhoneUtils.extractPhoneSuffix(rawUserPhone)
+                                        val docCleanPhone = com.family.talkly.util.PhoneUtils.cleanPhoneNumber(rawUserPhone)
+                                        val docUid = doc.id
+
+                                        if ((targetSuffix.isNotBlank() && docSuffix == targetSuffix) ||
+                                            (cleanPhone.isNotBlank() && (docCleanPhone.contains(cleanPhone) || cleanPhone.contains(docCleanPhone))) ||
+                                            docUid == cleanPhone
+                                        ) {
+                                            val name = doc.getString("name") ?: "Talkly User"
+                                            val pic = doc.getString("profilePicUrl") ?: ""
+                                            val bio = doc.getString("bio") ?: "Available on Talkly 💬"
+                                            val profile = com.family.talkly.data.models.UserProfile(
+                                                uid = docUid,
+                                                name = name,
+                                                phoneNumber = if (rawUserPhone.isNotBlank()) rawUserPhone else phone,
+                                                phoneSuffix = docSuffix,
+                                                profilePicUrl = pic,
+                                                bio = bio
+                                            )
+                                            onResult(profile)
+                                            return@addOnSuccessListener
+                                        }
+                                    }
+                                }
+                                onResult(null)
                             }
-                        }
+                            ?.addOnFailureListener { onResult(null) }
                     }
-                    onResult(null)
                 }
                 ?.addOnFailureListener {
                     onResult(null)
@@ -221,7 +254,8 @@ class FirebaseChatRepository(private val context: Context) {
         onComplete: ((FamilyMember) -> Unit)? = null
     ) {
         val cleanPhone = phone.trim()
-        val customId = "contact_${cleanPhone.replace("+", "").replace(" ", "")}"
+        val phoneSuffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(cleanPhone)
+        val customId = "contact_${phoneSuffix.ifBlank { cleanPhone.replace("+", "").replace(" ", "") }}"
 
         val newMember = FamilyMember(
             id = customId,
@@ -238,8 +272,12 @@ class FirebaseChatRepository(private val context: Context) {
         )
 
         val currentList = _familyMembers.value.toMutableList()
-        // Remove existing if duplicate
-        currentList.removeAll { it.id == customId || it.phone == cleanPhone }
+        // Remove existing if duplicate by ID or suffix
+        currentList.removeAll { 
+            it.id == customId || 
+            it.phone == cleanPhone ||
+            (phoneSuffix.isNotBlank() && com.family.talkly.util.PhoneUtils.extractPhoneSuffix(it.phone) == phoneSuffix)
+        }
         currentList.add(0, newMember) // Put at top
         _familyMembers.value = currentList
 
@@ -255,6 +293,7 @@ class FirebaseChatRepository(private val context: Context) {
                         "name" to name,
                         "relation" to relation,
                         "phone" to cleanPhone,
+                        "phoneSuffix" to phoneSuffix,
                         "status" to bio,
                         "avatarUrl" to avatarUrl,
                         "isOnline" to true
@@ -379,19 +418,50 @@ class FirebaseChatRepository(private val context: Context) {
                     }
 
                     if (snapshot != null) {
-                        val registeredDocsMap = mutableMapOf<String, com.google.firebase.firestore.DocumentSnapshot>()
+                        val registeredDocsBySuffix = mutableMapOf<String, com.google.firebase.firestore.DocumentSnapshot>()
+                        val registeredDocsByFullPhone = mutableMapOf<String, com.google.firebase.firestore.DocumentSnapshot>()
+
                         for (doc in snapshot.documents) {
                             val rawPhone = doc.getString("phoneNumber") ?: ""
-                            val cleanPhone = rawPhone.trim().replace(" ", "").replace("-", "")
-                            if (cleanPhone.isNotBlank()) {
-                                registeredDocsMap[cleanPhone] = doc
+                            val suffix = doc.getString("phoneSuffix") ?: com.family.talkly.util.PhoneUtils.extractPhoneSuffix(rawPhone)
+                            val cleanPhone = com.family.talkly.util.PhoneUtils.cleanPhoneNumber(rawPhone)
+
+                            if (suffix.isNotBlank()) {
+                                registeredDocsBySuffix[suffix] = doc
                             }
-                            registeredDocsMap[doc.id] = doc
+                            if (cleanPhone.isNotBlank()) {
+                                registeredDocsByFullPhone[cleanPhone] = doc
+                            }
+                            registeredDocsByFullPhone[doc.id] = doc
                         }
 
                         val updatedMembers = _familyMembers.value.map { member ->
-                            val cleanMemberPhone = member.phone.trim().replace(" ", "").replace("-", "")
-                            val matchedDoc = registeredDocsMap[cleanMemberPhone] ?: registeredDocsMap[member.id]
+                            val memberSuffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(member.phone)
+                            val cleanMemberPhone = com.family.talkly.util.PhoneUtils.cleanPhoneNumber(member.phone)
+
+                            var matchedDoc = registeredDocsBySuffix[memberSuffix]
+                                ?: registeredDocsByFullPhone[cleanMemberPhone]
+                                ?: registeredDocsByFullPhone[member.id]
+
+                            if (matchedDoc == null && memberSuffix.length >= 6) {
+                                for (doc in snapshot.documents) {
+                                    val docPhone = doc.getString("phoneNumber") ?: ""
+                                    val docDigits = docPhone.filter { it.isDigit() }
+                                    val docSuffix = doc.getString("phoneSuffix") ?: if (docDigits.length >= 10) docDigits.takeLast(10) else docDigits
+                                    val docLast10 = if (docDigits.length >= 10) docDigits.takeLast(10) else docDigits
+
+                                    if ((docSuffix.isNotBlank() && docSuffix == memberSuffix) ||
+                                        (docLast10.isNotBlank() && docLast10 == memberSuffix) ||
+                                        (memberSuffix.isNotBlank() && (docLast10.endsWith(memberSuffix) || memberSuffix.endsWith(docLast10)))
+                                    ) {
+                                        matchedDoc = doc
+                                        break
+                                    }
+                                }
+                            }
+
+                            val isMatch = (matchedDoc != null)
+                            Log.d("ContactSync", "Checking contact: ${member.phone} | Suffix: $memberSuffix | Found Match: $isMatch")
 
                             if (matchedDoc != null) {
                                 val uid = matchedDoc.id
@@ -635,10 +705,11 @@ class FirebaseChatRepository(private val context: Context) {
         updatedMap[memberId] = currentList
         _messagesMap.value = updatedMap
 
-        // Sync to Firebase Firestore if available
+        // Sync to Firebase Firestore using matched user's firebaseUid if available
+        val targetUid = _familyMembers.value.firstOrNull { it.id == memberId }?.firebaseUid ?: memberId
         try {
             firestore?.collection("family_chats")
-                ?.document(memberId)
+                ?.document(targetUid)
                 ?.collection("messages")
                 ?.document(newMessage.id)
                 ?.set(newMessage)
