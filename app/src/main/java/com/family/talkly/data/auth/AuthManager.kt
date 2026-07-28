@@ -50,10 +50,10 @@ class AuthManager(private val context: Context) {
             } catch (e: Exception) {
                 try {
                     val options = com.google.firebase.FirebaseOptions.Builder()
-                        .setApplicationId("1:123456789012:android:abcdef1234567890")
-                        .setGcmSenderId("123456789012")
+                        .setApplicationId("1:688875089801:android:07f27e3cf40ca2af913b58")
+                        .setGcmSenderId("688875089801")
                         .setProjectId("familycallapp-e6b21")
-                        .setApiKey("AIzaSyDummyApiKeyForFirebaseInit12345")
+                        .setApiKey("AIzaSyCmmYWBqRREKmhNaBvc1drcTJib0EuMgF0")
                         .build()
                     com.google.firebase.FirebaseApp.initializeApp(context, options)
                 } catch (ex: Exception) {
