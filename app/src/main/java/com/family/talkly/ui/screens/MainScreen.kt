@@ -36,6 +36,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.family.talkly.data.firebase.FirebaseChatRepository
+import com.family.talkly.data.models.CallDirection
 import com.family.talkly.data.models.CallType
 import com.family.talkly.data.models.DEFAULT_FAMILY_MEMBERS
 import com.family.talkly.data.models.FamilyMember
@@ -77,6 +78,33 @@ fun MainScreen(
     val callInfo by zegoManager.callState.collectAsState()
     val callLogs by zegoManager.callLogs.collectAsState()
 
+    androidx.compose.runtime.LaunchedEffect(currentUserProfile?.uid) {
+        if (currentUserProfile != null && currentUserProfile.uid.isNotBlank()) {
+            chatRepository.startRealtimeMessageSync(currentUserProfile.uid)
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        zegoManager.onCallLogAdded = { log ->
+            val callTypeLabel = if (log.callType == CallType.VIDEO) "Video call" else "Voice call"
+            val durationText = if (log.durationSeconds > 0) {
+                val mins = log.durationSeconds / 60
+                val secs = log.durationSeconds % 60
+                String.format(java.util.Locale.getDefault(), " (%02d:%02d)", mins, secs)
+            } else ""
+            val messageText = when (log.direction) {
+                CallDirection.MISSED -> "📞 Missed $callTypeLabel"
+                CallDirection.OUTGOING -> "📞 Outgoing $callTypeLabel$durationText"
+                CallDirection.INCOMING -> "📞 Incoming $callTypeLabel$durationText"
+            }
+            chatRepository.sendMessage(
+                memberId = log.memberId,
+                textContent = messageText,
+                type = MessageType.TEXT
+            )
+        }
+    }
+
     var pendingCallMember by remember { mutableStateOf<FamilyMember?>(null) }
     var pendingCallType by remember { mutableStateOf<CallType?>(null) }
 
@@ -100,6 +128,12 @@ fun MainScreen(
     }
 
     fun startCallWithPermissions(target: FamilyMember, callType: CallType) {
+        val isBlocked = blockedUserIds.contains(target.id) || chatRepository.isUserBlocked(target.id)
+        if (isBlocked) {
+            Toast.makeText(context, "Cannot call: User is blocked", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         if (!target.isRegisteredOnTalkly || target.firebaseUid.isNullOrEmpty()) {
             Toast.makeText(context, "User not registered on Talkly", Toast.LENGTH_SHORT).show()
             return
@@ -109,7 +143,7 @@ fun MainScreen(
         val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
         if (hasCamera && hasMic) {
-            zegoManager.startOutgoingCall(target, callType)
+            zegoManager.startOutgoingCall(target, callType, isBlocked = isBlocked)
         } else {
             pendingCallMember = target
             pendingCallType = callType
@@ -128,7 +162,7 @@ fun MainScreen(
     }
 
     // Full Screen Active Call Screen
-    if (callInfo.state == CallState.ACTIVE || callInfo.state == CallState.OUTGOING_RINGING) {
+    if (callInfo.state == CallState.ACTIVE || callInfo.state == CallState.OUTGOING_RINGING || callInfo.state == CallState.OUTGOING_CALLING) {
         CallScreen(
             callInfo = callInfo,
             onEndCall = { zegoManager.endCall() },

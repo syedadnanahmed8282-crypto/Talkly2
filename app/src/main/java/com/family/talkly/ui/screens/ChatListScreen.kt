@@ -700,8 +700,13 @@ fun ChatListScreen(
                     Divider(color = SecondaryLightSage.copy(alpha = 0.2f))
 
                     // Family Conversations List
-                    val sortedMembers = remember(familyMembers) {
-                        familyMembers.sortedWith(compareByDescending { it.isPinned })
+                    val sortedMembers = remember(familyMembers, messagesMap) {
+                        familyMembers.sortedWith(
+                            compareByDescending<FamilyMember> { it.isPinned }
+                                .thenByDescending { member ->
+                                    messagesMap[member.id]?.lastOrNull()?.timestamp ?: 0L
+                                }
+                        )
                     }
 
                     if (sortedMembers.isEmpty()) {

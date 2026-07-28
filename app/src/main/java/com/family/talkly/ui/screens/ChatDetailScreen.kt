@@ -45,6 +45,8 @@ import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import java.io.File
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -60,6 +62,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Lock
@@ -1199,8 +1202,12 @@ fun ChatDetailScreen(
                     item { Spacer(modifier = Modifier.height(8.dp)) }
 
                     items(displayedMessages, key = { it.id }) { msg ->
-                        val isSelf = msg.senderId == "self"
+                        val isMemberSender = (msg.senderId == member.id) ||
+                                (!member.firebaseUid.isNullOrBlank() && msg.senderId == member.firebaseUid) ||
+                                (member.phone.isNotBlank() && msg.senderId == member.phone)
+                        val isSelf = msg.senderId == "self" || !isMemberSender
                         var offsetX by remember { mutableFloatStateOf(0f) }
+                        var showReadDetails by remember { mutableStateOf(false) }
 
                         Box(
                             modifier = Modifier
@@ -1270,9 +1277,11 @@ fun ChatDetailScreen(
                                         ),
                                         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
                                         modifier = Modifier
-                                            .width(280.dp)
+                                            .widthIn(min = 90.dp, max = 280.dp)
                                             .combinedClickable(
-                                                onClick = { },
+                                                onClick = {
+                                                    showReadDetails = !showReadDetails
+                                                },
                                                 onLongClick = {
                                                     reactionDialogMessage = msg
                                                 }
@@ -1345,7 +1354,7 @@ fun ChatDetailScreen(
 
                                             // Timestamp & Read Receipt Double Tick
                                             Row(
-                                                modifier = Modifier.fillMaxWidth(),
+                                                modifier = Modifier.align(Alignment.End),
                                                 horizontalArrangement = Arrangement.End,
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
@@ -1374,13 +1383,50 @@ fun ChatDetailScreen(
                                                 )
                                                 if (isSelf) {
                                                     Spacer(modifier = Modifier.width(4.dp))
-                                                    Icon(
-                                                        imageVector = Icons.Default.DoneAll,
-                                                        contentDescription = if (msg.isRead) "Read" else "Sent",
-                                                        tint = if (msg.isRead) Color(0xFF53BDEB) else subTextColor,
-                                                        modifier = Modifier.size(15.dp)
-                                                    )
+                                                    when {
+                                                        msg.isRead -> {
+                                                            Text(
+                                                                text = "°",
+                                                                color = Color(0xFF25D366),
+                                                                fontSize = 15.sp,
+                                                                fontWeight = FontWeight.Bold
+                                                            )
+                                                        }
+                                                        msg.isDelivered -> {
+                                                            Icon(
+                                                                imageVector = Icons.Default.DoneAll,
+                                                                contentDescription = "Delivered",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(15.dp)
+                                                            )
+                                                        }
+                                                        else -> {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Done,
+                                                                contentDescription = "Sent",
+                                                                tint = subTextColor,
+                                                                modifier = Modifier.size(15.dp)
+                                                            )
+                                                        }
+                                                    }
                                                 }
+                                            }
+
+                                            if (showReadDetails) {
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                val detailsText = if (msg.isRead) {
+                                                    "Seen at ${msg.formattedReadTime}"
+                                                } else if (msg.isDelivered) {
+                                                    "Delivered ${msg.formattedTime}"
+                                                } else {
+                                                    "Sent ${msg.formattedTime}"
+                                                }
+                                                Text(
+                                                    text = detailsText,
+                                                    fontSize = 9.sp,
+                                                    color = subTextColor,
+                                                    modifier = Modifier.align(Alignment.End)
+                                                )
                                             }
                                         }
                                     }

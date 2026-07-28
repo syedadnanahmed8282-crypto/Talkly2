@@ -23,7 +23,9 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val callType: String? = null, // "AUDIO" or "VIDEO"
     val callDurationSec: Int = 0,
+    val isDelivered: Boolean = true,
     val isRead: Boolean = false,
+    val readAtTimestamp: Long? = null,
     val reaction: String? = null,
     val isStarred: Boolean = false,
     val isPinned: Boolean = false,
@@ -47,6 +49,13 @@ data class ChatMessage(
         get() {
             val sdf = SimpleDateFormat("h:mm a", Locale.getDefault())
             return sdf.format(Date(timestamp))
+        }
+
+    val formattedReadTime: String
+        get() {
+            val t = readAtTimestamp ?: timestamp
+            val sdf = SimpleDateFormat("h:mm a", Locale.getDefault())
+            return sdf.format(Date(t))
         }
 
     val formattedDate: String

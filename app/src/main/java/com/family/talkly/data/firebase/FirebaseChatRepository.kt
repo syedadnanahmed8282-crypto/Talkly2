@@ -33,6 +33,8 @@ class FirebaseChatRepository(private val context: Context) {
 
     private var firestore: FirebaseFirestore? = null
     private var membersListener: ListenerRegistration? = null
+    private var messagesListener: ListenerRegistration? = null
+    private var currentSyncedUserId: String? = null
     private val contactPrefs = context.getSharedPreferences(CONTACTS_PREFS, Context.MODE_PRIVATE)
 
     // Real-time family members presence and status
@@ -472,7 +474,7 @@ class FirebaseChatRepository(private val context: Context) {
                                     name = if (realName.isNotBlank()) realName else member.name,
                                     isRegisteredOnTalkly = true,
                                     firebaseUid = uid,
-                                    avatarUrl = if (!pic.isNull_or_empty_str(pic)) pic else member.avatarUrl,
+                                    avatarUrl = if (!pic.isNullOrBlank()) pic else member.avatarUrl,
                                     status = if (bio.isBlank()) "Available on Talkly 💬" else bio
                                 )
                             } else {
@@ -534,7 +536,8 @@ class FirebaseChatRepository(private val context: Context) {
         val updatedMessages = currentMessages.map { msg ->
             if (msg.senderId != "self" && !msg.isRead) {
                 updatedAny = true
-                val readMsg = msg.copy(isRead = true)
+                val now = System.currentTimeMillis()
+                val readMsg = msg.copy(isRead = true, readAtTimestamp = now, isDelivered = true)
 
                 // Sync read status to Firestore
                 try {
@@ -542,7 +545,13 @@ class FirebaseChatRepository(private val context: Context) {
                         ?.document(memberId)
                         ?.collection("messages")
                         ?.document(msg.id)
-                        ?.update("isRead", true)
+                        ?.update(
+                            mapOf(
+                                "isRead" to true,
+                                "readAtTimestamp" to now,
+                                "isDelivered" to true
+                            )
+                        )
                 } catch (e: Exception) {
                     Log.w(TAG, "Error updating read receipt in Firestore: ${e.localizedMessage}")
                 }
@@ -674,6 +683,164 @@ class FirebaseChatRepository(private val context: Context) {
         _familyMembers.value = updatedMembers
     }
 
+    fun startRealtimeMessageSync(currentUserId: String?) {
+        if (currentUserId.isNullOrBlank()) return
+        if (currentSyncedUserId == currentUserId && messagesListener != null) return
+
+        messagesListener?.remove()
+        currentSyncedUserId = currentUserId
+
+        try {
+            messagesListener = firestore?.collection("family_chats")
+                ?.document(currentUserId)
+                ?.collection("messages")
+                ?.addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Listen failed for messages: ${error.localizedMessage}")
+                        return@addSnapshotListener
+                    }
+
+                    if (snapshot != null && !snapshot.isEmpty) {
+                        val currentMap = _messagesMap.value.toMutableMap()
+
+                        for (doc in snapshot.documents) {
+                            try {
+                                val id = doc.getString("id") ?: doc.id
+                                val senderId = doc.getString("senderId") ?: ""
+                                val senderName = doc.getString("senderName") ?: "Talkly User"
+                                val receiverId = doc.getString("receiverId") ?: ""
+                                val textContent = doc.getString("textContent") ?: ""
+                                val mediaUrl = doc.getString("mediaUrl")
+                                val typeStr = doc.getString("messageType") ?: "TEXT"
+                                val type = try { MessageType.valueOf(typeStr) } catch (e: Exception) { MessageType.TEXT }
+                                val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
+                                val isRead = doc.getBoolean("isRead") ?: false
+                                val isDelivered = doc.getBoolean("isDelivered") ?: true
+                                val readAtTimestamp = doc.getLong("readAtTimestamp")
+                                val isStarred = doc.getBoolean("isStarred") ?: false
+                                val isPinned = doc.getBoolean("isPinned") ?: false
+
+                                val message = ChatMessage(
+                                    id = id,
+                                    senderId = senderId,
+                                    senderName = senderName,
+                                    receiverId = receiverId,
+                                    messageType = type,
+                                    textContent = textContent,
+                                    mediaUrl = mediaUrl,
+                                    timestamp = timestamp,
+                                    isDelivered = isDelivered,
+                                    isRead = isRead,
+                                    readAtTimestamp = readAtTimestamp,
+                                    isStarred = isStarred,
+                                    isPinned = isPinned
+                                )
+
+                                val otherPartyId = if (senderId == "self" || senderId == currentUserId) receiverId else senderId
+                                if (otherPartyId.isBlank()) continue
+
+                                ensureContactInChatList(otherPartyId)
+
+                                val existingMsgs = (currentMap[otherPartyId] ?: emptyList()).toMutableList()
+                                val existingIndex = existingMsgs.indexOfFirst { it.id == id }
+                                if (existingIndex >= 0) {
+                                    existingMsgs[existingIndex] = message
+                                } else {
+                                    existingMsgs.add(message)
+                                }
+                                existingMsgs.sortBy { it.timestamp }
+                                currentMap[otherPartyId] = existingMsgs
+
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error parsing chat message doc ${doc.id}: ${e.message}")
+                            }
+                        }
+
+                        _messagesMap.value = currentMap
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error starting realtime message sync: ${e.localizedMessage}")
+        }
+    }
+
+    fun ensureContactInChatList(memberOrUidOrPhone: String) {
+        if (memberOrUidOrPhone.isBlank()) return
+        val suffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(memberOrUidOrPhone)
+        val existing = _familyMembers.value.firstOrNull { member ->
+            member.id == memberOrUidOrPhone ||
+            member.firebaseUid == memberOrUidOrPhone ||
+            member.phone == memberOrUidOrPhone ||
+            (suffix.isNotBlank() && com.family.talkly.util.PhoneUtils.extractPhoneSuffix(member.phone) == suffix)
+        }
+
+        if (existing == null) {
+            firestore?.collection("users")
+                ?.document(memberOrUidOrPhone)
+                ?.get()
+                ?.addOnSuccessListener { doc ->
+                    if (doc != null && doc.exists()) {
+                        val uid = doc.id
+                        val name = doc.getString("name") ?: "Talkly User"
+                        val phone = doc.getString("phoneNumber") ?: memberOrUidOrPhone
+                        val pic = doc.getString("profilePicUrl")
+                        val bio = doc.getString("bio") ?: "Available on Talkly 💬"
+
+                        val newMember = FamilyMember(
+                            id = uid,
+                            name = name,
+                            relation = "Contact",
+                            avatarUrl = pic,
+                            status = bio,
+                            phone = phone,
+                            isOnline = true,
+                            isRegisteredOnTalkly = true,
+                            firebaseUid = uid
+                        )
+
+                        val currentList = _familyMembers.value.toMutableList()
+                        if (currentList.none { it.id == uid || it.firebaseUid == uid }) {
+                            currentList.add(0, newMember)
+                            _familyMembers.value = currentList
+                            saveContactsToPrefs()
+                        }
+                    } else {
+                        val fallbackMember = FamilyMember(
+                            id = memberOrUidOrPhone,
+                            name = if (memberOrUidOrPhone.startsWith("+") || memberOrUidOrPhone.all { it.isDigit() }) memberOrUidOrPhone else "Talkly User",
+                            relation = "Contact",
+                            phone = memberOrUidOrPhone,
+                            isOnline = true,
+                            isRegisteredOnTalkly = true,
+                            firebaseUid = if (!memberOrUidOrPhone.startsWith("contact_") && !memberOrUidOrPhone.contains(" ")) memberOrUidOrPhone else null
+                        )
+                        val currentList = _familyMembers.value.toMutableList()
+                        if (currentList.none { it.id == memberOrUidOrPhone }) {
+                            currentList.add(0, fallbackMember)
+                            _familyMembers.value = currentList
+                            saveContactsToPrefs()
+                        }
+                    }
+                }
+                ?.addOnFailureListener {
+                    val fallbackMember = FamilyMember(
+                        id = memberOrUidOrPhone,
+                        name = memberOrUidOrPhone,
+                        relation = "Contact",
+                        phone = memberOrUidOrPhone,
+                        isOnline = true,
+                        isRegisteredOnTalkly = true
+                    )
+                    val currentList = _familyMembers.value.toMutableList()
+                    if (currentList.none { it.id == memberOrUidOrPhone }) {
+                        currentList.add(0, fallbackMember)
+                        _familyMembers.value = currentList
+                        saveContactsToPrefs()
+                    }
+                }
+        }
+    }
+
     fun sendMessage(
         memberId: String,
         textContent: String,
@@ -684,9 +851,12 @@ class FirebaseChatRepository(private val context: Context) {
         replyToSenderName: String? = null,
         replyToText: String? = null
     ) {
+        ensureContactInChatList(memberId)
+
+        val senderUid = currentSyncedUserId ?: "self"
         val newMessage = ChatMessage(
             id = "msg_${System.currentTimeMillis()}",
-            senderId = "self",
+            senderId = senderUid,
             senderName = "You",
             receiverId = memberId,
             messageType = type,
@@ -705,14 +875,24 @@ class FirebaseChatRepository(private val context: Context) {
         updatedMap[memberId] = currentList
         _messagesMap.value = updatedMap
 
-        // Sync to Firebase Firestore using matched user's firebaseUid if available
+        // Sync to Firebase Firestore for both receiver and sender
         val targetUid = _familyMembers.value.firstOrNull { it.id == memberId }?.firebaseUid ?: memberId
         try {
+            // Write to Receiver's collection
             firestore?.collection("family_chats")
                 ?.document(targetUid)
                 ?.collection("messages")
                 ?.document(newMessage.id)
                 ?.set(newMessage)
+
+            // Write to Sender's collection
+            if (!senderUid.isNullOrBlank() && senderUid != "self") {
+                firestore?.collection("family_chats")
+                    ?.document(senderUid)
+                    ?.collection("messages")
+                    ?.document(newMessage.id)
+                    ?.set(newMessage)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Firestore sync skipped: ${e.localizedMessage}")
         }

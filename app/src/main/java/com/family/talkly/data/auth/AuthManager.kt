@@ -323,7 +323,8 @@ class AuthManager(private val context: Context) {
             "email" to getInternalEmail(phoneNumber),
             "profilePicUrl" to profilePicUrl,
             "bio" to bio,
-            "createdAt" to System.currentTimeMillis()
+            "createdAt" to System.currentTimeMillis(),
+            "updatedAt" to System.currentTimeMillis()
         )
 
         try {
@@ -351,7 +352,8 @@ class AuthManager(private val context: Context) {
         val userData = mapOf(
             "uid" to uid,
             "phoneNumber" to phoneNumber,
-            "phoneSuffix" to suffix
+            "phoneSuffix" to suffix,
+            "updatedAt" to System.currentTimeMillis()
         )
 
         try {
@@ -454,7 +456,8 @@ class AuthManager(private val context: Context) {
             "email" to getInternalEmail(phone),
             "profilePicUrl" to profilePicUrl,
             "bio" to bio,
-            "createdAt" to System.currentTimeMillis()
+            "createdAt" to System.currentTimeMillis(),
+            "updatedAt" to System.currentTimeMillis()
         )
 
         try {

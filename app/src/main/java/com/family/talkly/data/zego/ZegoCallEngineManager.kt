@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 
 enum class CallState {
     IDLE,
+    OUTGOING_CALLING,
     OUTGOING_RINGING,
     INCOMING_RINGING,
     ACTIVE,
@@ -91,13 +92,22 @@ class ZegoCallEngineManager(private val context: Context) {
     val callLogs: StateFlow<List<CallLog>> = _callLogs.asStateFlow()
 
     private var timerJob: Job? = null
+    private var ringingTimeoutJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main)
+    var onCallLogAdded: ((CallLog) -> Unit)? = null
 
     init {
         Log.i(TAG, "ZEGOCloud Express Engine configured with AppID: $ZEGO_APP_ID for Firebase Project $FIREBASE_PROJECT_ID")
     }
 
-    fun startOutgoingCall(member: FamilyMember, callType: CallType) {
+    fun startOutgoingCall(member: FamilyMember, callType: CallType, isBlocked: Boolean = false) {
+        if (isBlocked) {
+            Log.w(TAG, "Cannot start call: ${member.name} is blocked")
+            android.widget.Toast.makeText(context, "Call failed: User is blocked", android.widget.Toast.LENGTH_SHORT).show()
+            endCallInternal("User Blocked")
+            return
+        }
+
         if (!member.isRegisteredOnTalkly || member.firebaseUid.isNullOrEmpty()) {
             Log.w(TAG, "Cannot start call: ${member.name} is not registered on Talkly")
             android.widget.Toast.makeText(context, "User not registered on Talkly", android.widget.Toast.LENGTH_SHORT).show()
@@ -106,8 +116,10 @@ class ZegoCallEngineManager(private val context: Context) {
 
         val targetUid = member.firebaseUid!!
         val roomID = "talkly_room_${targetUid}_${System.currentTimeMillis()}"
+
+        // Initial state: OUTGOING_CALLING ("Calling...")
         _callState.value = CurrentCallInfo(
-            state = CallState.OUTGOING_RINGING,
+            state = CallState.OUTGOING_CALLING,
             callType = callType,
             targetMember = member,
             roomID = roomID,
@@ -119,7 +131,26 @@ class ZegoCallEngineManager(private val context: Context) {
         )
         Log.d(TAG, "Starting outgoing ${callType.name} call to registered user Firebase UID: $targetUid (${member.name}) in room $roomID via ZEGOCloud")
 
-        // Calls are ONLY sent to valid, registered user IDs (Firebase UID) and do NOT auto-answer without remote acceptance.
+        ringingTimeoutJob?.cancel()
+
+        // Step 1: Transition to OUTGOING_RINGING ("Ringing...") after connection check if target is online
+        scope.launch {
+            delay(1500)
+            if (_callState.value.state == CallState.OUTGOING_CALLING && member.isOnline) {
+                _callState.value = _callState.value.copy(state = CallState.OUTGOING_RINGING)
+            }
+        }
+
+        // Step 2: 30 Seconds Ringing Timeout (auto disconnect if unanswered)
+        ringingTimeoutJob = scope.launch {
+            delay(30000)
+            val currentState = _callState.value.state
+            if (currentState == CallState.OUTGOING_CALLING || currentState == CallState.OUTGOING_RINGING) {
+                Log.d(TAG, "Call timed out after 30s: No answer from ${member.name}")
+                android.widget.Toast.makeText(context, "No answer from ${member.name}", android.widget.Toast.LENGTH_SHORT).show()
+                endCall()
+            }
+        }
     }
 
     fun triggerIncomingCall(member: FamilyMember, callType: CallType) {
@@ -134,12 +165,14 @@ class ZegoCallEngineManager(private val context: Context) {
     }
 
     fun acceptCall() {
+        ringingTimeoutJob?.cancel()
         val current = _callState.value
         _callState.value = current.copy(state = CallState.ACTIVE)
         startCallTimer()
     }
 
     fun declineCall() {
+        ringingTimeoutJob?.cancel()
         val current = _callState.value
         val member = current.targetMember
         if (member != null) {
@@ -159,10 +192,11 @@ class ZegoCallEngineManager(private val context: Context) {
     }
 
     fun endCall() {
+        ringingTimeoutJob?.cancel()
         val current = _callState.value
         val member = current.targetMember
         if (member != null) {
-            val direction = if (current.state == CallState.OUTGOING_RINGING) CallDirection.OUTGOING else CallDirection.INCOMING
+            val direction = if (current.state == CallState.OUTGOING_RINGING || current.state == CallState.OUTGOING_CALLING) CallDirection.OUTGOING else CallDirection.INCOMING
             addCallLog(
                 CallLog(
                     id = "call_${System.currentTimeMillis()}",
@@ -179,6 +213,7 @@ class ZegoCallEngineManager(private val context: Context) {
     }
 
     private fun endCallInternal(reason: String) {
+        ringingTimeoutJob?.cancel()
         timerJob?.cancel()
         _callState.value = _callState.value.copy(state = CallState.ENDED)
         scope.launch {
@@ -223,5 +258,6 @@ class ZegoCallEngineManager(private val context: Context) {
         val list = _callLogs.value.toMutableList()
         list.add(0, log)
         _callLogs.value = list
+        onCallLogAdded?.invoke(log)
     }
 }

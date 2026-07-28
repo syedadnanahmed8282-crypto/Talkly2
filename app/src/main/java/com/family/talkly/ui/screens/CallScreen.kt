@@ -2,14 +2,18 @@ package com.family.talkly.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,10 +22,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Splitscreen
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
@@ -32,14 +38,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -54,104 +71,155 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import android.view.TextureView
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import com.family.talkly.data.models.CallType
+import com.family.talkly.data.models.FamilyMember
 import com.family.talkly.data.zego.CurrentCallInfo
-import com.family.talkly.data.zego.ZegoCallEngineManager
 import com.family.talkly.ui.theme.WhatsappGreen
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @Composable
 fun CameraPreviewView(
     isFrontCamera: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
+    key(isFrontCamera) {
+        val context = LocalContext.current
 
-    AndroidView(
-        factory = { ctx ->
-            TextureView(ctx).apply {
-                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                    private var cameraDevice: CameraDevice? = null
-                    private var captureSession: CameraCaptureSession? = null
-                    private var backgroundThread: HandlerThread? = null
-                    private var backgroundHandler: Handler? = null
+        AndroidView(
+            factory = { ctx ->
+                TextureView(ctx).apply {
+                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        private var cameraDevice: CameraDevice? = null
+                        private var captureSession: CameraCaptureSession? = null
+                        private var backgroundThread: HandlerThread? = null
+                        private var backgroundHandler: Handler? = null
 
-                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                        try {
-                            backgroundThread = HandlerThread("CameraBackground").also { it.start() }
-                            backgroundHandler = Handler(backgroundThread!!.looper)
+                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                            try {
+                                backgroundThread = HandlerThread("CameraBackground_${System.currentTimeMillis()}").also { it.start() }
+                                backgroundHandler = Handler(backgroundThread!!.looper)
 
-                            val cameraManager = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                            val targetFacing = if (isFrontCamera) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+                                val cameraManager = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                                val targetFacing = if (isFrontCamera) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
 
-                            val cameraId = cameraManager.cameraIdList.firstOrNull { id ->
-                                val facing = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
-                                facing == targetFacing
-                            } ?: cameraManager.cameraIdList.firstOrNull() ?: return
+                                val cameraId = cameraManager.cameraIdList.firstOrNull { id ->
+                                    val facing = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
+                                    facing == targetFacing
+                                } ?: cameraManager.cameraIdList.firstOrNull() ?: return
 
-                            if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                                return
-                            }
+                                if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                                    return
+                                }
 
-                            cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
-                                override fun onOpened(camera: CameraDevice) {
-                                    cameraDevice = camera
-                                    val surface = Surface(st)
-                                    val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                                    requestBuilder.addTarget(surface)
+                                cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+                                    override fun onOpened(camera: CameraDevice) {
+                                        cameraDevice = camera
+                                        val surface = Surface(st)
+                                        val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                                        requestBuilder.addTarget(surface)
 
-                                    camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
-                                        override fun onConfigured(session: CameraCaptureSession) {
-                                            captureSession = session
-                                            try {
-                                                requestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                                                session.setRepeatingRequest(requestBuilder.build(), null, backgroundHandler)
-                                            } catch (e: Exception) {
-                                                Log.e("CameraPreviewView", "Error setting repeating request: ${e.message}")
+                                        camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
+                                            override fun onConfigured(session: CameraCaptureSession) {
+                                                captureSession = session
+                                                try {
+                                                    requestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                                    session.setRepeatingRequest(requestBuilder.build(), null, backgroundHandler)
+                                                } catch (e: Exception) {
+                                                    Log.e("CameraPreviewView", "Error setting repeating request: ${e.message}")
+                                                }
                                             }
-                                        }
 
-                                        override fun onConfigureFailed(session: CameraCaptureSession) {}
-                                    }, backgroundHandler)
-                                }
+                                            override fun onConfigureFailed(session: CameraCaptureSession) {}
+                                        }, backgroundHandler)
+                                    }
 
-                                override fun onDisconnected(camera: CameraDevice) {
-                                    camera.close()
-                                    cameraDevice = null
-                                }
+                                    override fun onDisconnected(camera: CameraDevice) {
+                                        try { camera.close() } catch (_: Exception) {}
+                                        cameraDevice = null
+                                    }
 
-                                override fun onError(camera: CameraDevice, error: Int) {
-                                    camera.close()
-                                    cameraDevice = null
-                                }
-                            }, backgroundHandler)
-                        } catch (e: Exception) {
-                            Log.e("CameraPreviewView", "Error opening camera: ${e.message}")
+                                    override fun onError(camera: CameraDevice, error: Int) {
+                                        try { camera.close() } catch (_: Exception) {}
+                                        cameraDevice = null
+                                    }
+                                }, backgroundHandler)
+                            } catch (e: Exception) {
+                                Log.e("CameraPreviewView", "Error opening camera: ${e.message}")
+                            }
                         }
-                    }
 
-                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
 
-                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                        try {
-                            captureSession?.close()
-                            cameraDevice?.close()
-                            backgroundThread?.quitSafely()
-                        } catch (e: Exception) {
-                            Log.e("CameraPreviewView", "Error releasing camera: ${e.message}")
+                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                            try {
+                                captureSession?.close()
+                                cameraDevice?.close()
+                                backgroundThread?.quitSafely()
+                            } catch (e: Exception) {
+                                Log.e("CameraPreviewView", "Error releasing camera: ${e.message}")
+                            }
+                            return true
                         }
-                        return true
-                    }
 
-                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                    }
                 }
-            }
-        },
+            },
+            modifier = modifier
+        )
+    }
+}
+
+@Composable
+fun RemoteVideoView(
+    member: FamilyMember?,
+    modifier: Modifier = Modifier
+) {
+    Box(
         modifier = modifier
-    )
+            .background(Color(0xFF101D25)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(90.dp)
+                    .background(WhatsappGreen, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = member?.name?.take(2)?.uppercase() ?: "FA",
+                    color = Color.White,
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = member?.name ?: "Partner",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Surface(
+                color = WhatsappGreen.copy(alpha = 0.2f),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    text = "HD Video Live",
+                    color = WhatsappGreen,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -170,67 +238,194 @@ fun CallScreen(
     val seconds = callInfo.durationSeconds % 60
     val formattedTimer = String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
 
+    val callStatusText = when (callInfo.state) {
+        com.family.talkly.data.zego.CallState.OUTGOING_CALLING -> "Calling..."
+        com.family.talkly.data.zego.CallState.OUTGOING_RINGING -> "Ringing..."
+        com.family.talkly.data.zego.CallState.INCOMING_RINGING -> "Incoming call..."
+        com.family.talkly.data.zego.CallState.ACTIVE -> formattedTimer
+        com.family.talkly.data.zego.CallState.ENDED -> "Call ended"
+        else -> ""
+    }
+
+    var isSwapped by remember { mutableStateOf(false) }
+    var isSplitScreen by remember { mutableStateOf(false) }
+    var pipOffsetX by remember { mutableFloatStateOf(0f) }
+    var pipOffsetY by remember { mutableFloatStateOf(0f) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0B141A))
     ) {
-        // Video or Audio Main Canvas
         if (isVideo && !callInfo.isCameraOff) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                // Live Hardware Camera Preview Feed
-                CameraPreviewView(
-                    isFrontCamera = callInfo.isFrontCamera,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Overlay Gradient and Member Tag
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.Black.copy(alpha = 0.4f),
-                                    Color.Transparent,
-                                    Color.Black.copy(alpha = 0.6f)
-                                )
+            if (isSplitScreen) {
+                // Split Screen Mode: Top and Bottom halves stacked
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Top Half: Remote View
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .border(1.dp, Color.White.copy(alpha = 0.2f))
+                    ) {
+                        RemoteVideoView(member = member, modifier = Modifier.fillMaxSize())
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.6f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = member?.name ?: "Partner",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
-                        )
-                )
+                        }
+                    }
 
-                // Local Picture-in-Picture Preview Box
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 80.dp, end = 16.dp)
-                        .size(width = 110.dp, height = 160.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .border(2.dp, WhatsappGreen, RoundedCornerShape(16.dp)),
-                    color = Color.Black
-                ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
+                    // Bottom Half: Local View
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .border(1.dp, Color.White.copy(alpha = 0.2f))
+                    ) {
                         CameraPreviewView(
                             isFrontCamera = callInfo.isFrontCamera,
                             modifier = Modifier.fillMaxSize()
                         )
-                        Box(
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.6f),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .background(Color.Black.copy(alpha = 0.6f))
-                                .padding(4.dp),
-                            contentAlignment = Alignment.Center
+                                .align(Alignment.BottomStart)
+                                .padding(12.dp)
                         ) {
                             Text(
-                                text = if (callInfo.isFrontCamera) "Front Cam" else "Rear Cam",
+                                text = if (callInfo.isFrontCamera) "You (Front)" else "You (Back)",
                                 color = Color.White,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
+                        }
+                    }
+                }
+
+                // Exit Split Screen Floating Button
+                IconButton(
+                    onClick = { isSplitScreen = false },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 48.dp, end = 16.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                        .size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Exit Split Screen",
+                        tint = Color.White
+                    )
+                }
+
+            } else {
+                // Standard Overlay Mode with Draggable PIP Popup
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Main Background Feed
+                    if (!isSwapped) {
+                        RemoteVideoView(member = member, modifier = Modifier.fillMaxSize())
+                    } else {
+                        CameraPreviewView(
+                            isFrontCamera = callInfo.isFrontCamera,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    // Overlay Gradient
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Black.copy(alpha = 0.4f),
+                                        Color.Transparent,
+                                        Color.Black.copy(alpha = 0.6f)
+                                    )
+                                )
+                            )
+                    )
+
+                    // Draggable Local/Remote Picture-in-Picture Popup
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 90.dp, end = 16.dp)
+                            .offset { IntOffset(pipOffsetX.roundToInt(), pipOffsetY.roundToInt()) }
+                            .size(width = 120.dp, height = 170.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(2.dp, WhatsappGreen, RoundedCornerShape(16.dp))
+                            .pointerInput(Unit) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    pipOffsetX += dragAmount.x
+                                    pipOffsetY += dragAmount.y
+                                }
+                            }
+                            .clickable { isSwapped = !isSwapped },
+                        color = Color.Black
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            if (!isSwapped) {
+                                CameraPreviewView(
+                                    isFrontCamera = callInfo.isFrontCamera,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                RemoteVideoView(member = member, modifier = Modifier.fillMaxSize())
+                            }
+
+                            // Bottom Label Tag
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .background(Color.Black.copy(alpha = 0.65f))
+                                    .padding(4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (!isSwapped) {
+                                        if (callInfo.isFrontCamera) "You (Front)" else "You (Rear)"
+                                    } else {
+                                        member?.name?.take(8) ?: "Partner"
+                                    },
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            // Top-Right Split Screen Icon Button on PIP Popup
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(4.dp)
+                                    .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                                    .clickable { isSplitScreen = true }
+                                    .padding(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Splitscreen,
+                                    contentDescription = "Split Screen Mode",
+                                    tint = WhatsappGreen,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -266,8 +461,11 @@ fun CallScreen(
                     )
                 )
                 Text(
-                    text = member?.relation ?: "Family",
-                    style = MaterialTheme.typography.bodyLarge.copy(color = Color.White.copy(alpha = 0.7f))
+                    text = callStatusText,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        color = if (callInfo.state == com.family.talkly.data.zego.CallState.ACTIVE) WhatsappGreen else Color.White.copy(alpha = 0.8f),
+                        fontWeight = FontWeight.Medium
+                    )
                 )
             }
         }
@@ -298,24 +496,10 @@ fun CallScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Surface(
-                color = Color.White.copy(alpha = 0.15f),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    text = "ZEGO AppID: ${ZegoCallEngineManager.ZEGO_APP_ID}",
-                    color = Color.White,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                )
-            }
-
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = formattedTimer,
+                text = callStatusText,
                 color = Color.White,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
@@ -422,3 +606,4 @@ fun CallScreen(
         }
     }
 }
+
