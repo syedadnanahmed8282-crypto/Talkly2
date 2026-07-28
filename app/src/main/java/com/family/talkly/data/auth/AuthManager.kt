@@ -43,8 +43,30 @@ class AuthManager(private val context: Context) {
         private const val KEY_BIO = "user_bio"
     }
 
-    private val firebaseAuth: FirebaseAuth by lazy { FirebaseAuth.getInstance() }
-    private val firestore: FirebaseFirestore by lazy { FirebaseFirestore.getInstance() }
+    private fun getFirebaseAuth(): FirebaseAuth? {
+        return try {
+            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+                com.google.firebase.FirebaseApp.initializeApp(context)
+            }
+            FirebaseAuth.getInstance()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get FirebaseAuth instance: ${e.localizedMessage}", e)
+            null
+        }
+    }
+
+    private fun getFirestore(): FirebaseFirestore? {
+        return try {
+            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+                com.google.firebase.FirebaseApp.initializeApp(context)
+            }
+            FirebaseFirestore.getInstance()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get FirebaseFirestore instance: ${e.localizedMessage}", e)
+            null
+        }
+    }
+
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _authState = MutableStateFlow<AuthState>(AuthState.InitialCheck)
@@ -64,7 +86,7 @@ class AuthManager(private val context: Context) {
         try {
             val isLoggedIn = prefs.getBoolean(KEY_IS_LOGGED_IN, false)
             val savedUid = prefs.getString(KEY_UID, null)
-            val firebaseUser = try { firebaseAuth.currentUser } catch (e: Exception) { null }
+            val firebaseUser = try { getFirebaseAuth()?.currentUser } catch (e: Exception) { null }
 
             if (isLoggedIn && !savedUid.isNullOrEmpty()) {
                 val name = prefs.getString(KEY_NAME, "") ?: ""
@@ -106,10 +128,18 @@ class AuthManager(private val context: Context) {
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
+        val auth = getFirebaseAuth()
+        if (auth == null) {
+            val errorMsg = "Firebase Authentication is not initialized on this device."
+            _authState.value = AuthState.Error(errorMsg)
+            onError(errorMsg)
+            return
+        }
+
         _authState.value = AuthState.VerificationInProgress("Sending OTP to $phoneNumber...")
 
         try {
-            val optionsBuilder = PhoneAuthOptions.newBuilder(firebaseAuth)
+            val optionsBuilder = PhoneAuthOptions.newBuilder(auth)
                 .setPhoneNumber(phoneNumber)
                 .setTimeout(60L, TimeUnit.SECONDS)
                 .setActivity(activity)
@@ -206,8 +236,20 @@ class AuthManager(private val context: Context) {
         onError: ((String) -> Unit)? = null
     ) {
         val verId = currentVerificationId ?: ""
+        val auth = getFirebaseAuth()
+        if (auth == null) {
+            val errorMsg = "Firebase Auth is not available."
+            if (verId.isNotEmpty()) {
+                _authState.value = AuthState.CodeSent(verId, phoneNumber, error = errorMsg)
+            } else {
+                _authState.value = AuthState.Error(errorMsg)
+            }
+            onError?.invoke(errorMsg)
+            return
+        }
+
         try {
-            firebaseAuth.signInWithCredential(credential)
+            auth.signInWithCredential(credential)
                 .addOnCompleteListener { task ->
                     if (task.isSuccessful) {
                         val user = task.result?.user
@@ -254,8 +296,15 @@ class AuthManager(private val context: Context) {
      * Checks Firestore 'users/{uid}' collection to see if user has completed profile setup
      */
     private fun checkUserProfileInFirestore(uid: String, phoneNumber: String) {
+        val db = getFirestore()
+        if (db == null) {
+            saveLocalSession(uid, "", phoneNumber, "", "")
+            _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
+            return
+        }
+
         try {
-            firestore.collection("users").document(uid).get()
+            db.collection("users").document(uid).get()
                 .addOnSuccessListener { doc ->
                     if (doc != null && doc.exists() && !doc.getString("name").isNullOrBlank()) {
                         val name = doc.getString("name") ?: ""
@@ -333,12 +382,12 @@ class AuthManager(private val context: Context) {
         )
 
         try {
-            firestore.collection("users").document(uid)
-                .set(profileMap)
-                .addOnSuccessListener {
+            getFirestore()?.collection("users")?.document(uid)
+                ?.set(profileMap)
+                ?.addOnSuccessListener {
                     Log.d(TAG, "Saved user profile to Firestore successfully")
                 }
-                .addOnFailureListener { e ->
+                ?.addOnFailureListener { e ->
                     Log.w(TAG, "Firestore user profile write failed: ${e.localizedMessage}")
                 }
         } catch (e: Exception) {
@@ -359,7 +408,7 @@ class AuthManager(private val context: Context) {
 
     fun logout() {
         try {
-            firebaseAuth.signOut()
+            getFirebaseAuth()?.signOut()
         } catch (e: Exception) {
             Log.w(TAG, "Sign out exception: ${e.localizedMessage}")
         }

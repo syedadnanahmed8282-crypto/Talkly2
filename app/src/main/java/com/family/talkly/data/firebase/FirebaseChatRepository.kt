@@ -59,6 +59,9 @@ class FirebaseChatRepository(private val context: Context) {
 
     init {
         try {
+            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+                com.google.firebase.FirebaseApp.initializeApp(context)
+            }
             firestore = FirebaseFirestore.getInstance()
             Log.i(TAG, "Initialized Firebase Firestore for project $FIREBASE_PROJECT_ID")
             setupFirestorePresenceListener()

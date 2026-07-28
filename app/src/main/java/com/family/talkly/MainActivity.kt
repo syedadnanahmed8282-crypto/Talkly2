@@ -38,6 +38,7 @@ import com.family.talkly.ui.theme.ThemePreferences
 import com.family.talkly.ui.theme.WhatsappGreen
 import com.family.talkly.ui.theme.WhatsappTeal
 import com.family.talkly.workers.DeleteExpiredMessagesWorker
+import com.google.firebase.FirebaseApp
 
 class MainActivity : ComponentActivity() {
 
@@ -49,6 +50,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        try {
+            if (FirebaseApp.getApps(applicationContext).isEmpty()) {
+                FirebaseApp.initializeApp(applicationContext)
+                android.util.Log.d("MainActivity", "FirebaseApp initialized in MainActivity.onCreate")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "FirebaseApp initialization check in MainActivity: ${e.localizedMessage}")
+        }
 
         authManager = AuthManager(applicationContext)
         chatRepository = FirebaseChatRepository(applicationContext)
