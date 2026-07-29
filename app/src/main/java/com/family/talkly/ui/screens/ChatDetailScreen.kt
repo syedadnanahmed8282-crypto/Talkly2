@@ -8,6 +8,8 @@ package com.family.talkly.ui.screens
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -27,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.layout.ContentScale
@@ -790,7 +793,7 @@ fun ChatDetailScreen(
                             Column {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = member.name,
+                                        text = member.firstName,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 16.sp,
                                         color = Color.White
@@ -809,8 +812,8 @@ fun ChatDetailScreen(
                                     !member.isRegisteredOnTalkly -> "User not registered on Talkly"
                                     isBlocked -> "Blocked"
                                     member.isTyping -> "typing..."
-                                    member.isOnline -> "Online • Family"
-                                    else -> "Offline • Last seen ${member.lastSeen}"
+                                    member.isRecentlyActive() -> "Online"
+                                    else -> "Last seen ${member.lastSeen}"
                                 }
                                 Text(
                                     text = statusSubtext,
@@ -1116,67 +1119,6 @@ fun ChatDetailScreen(
                 }
             }
 
-            // 48-Hour Media Retention Banner & Simulator Toggle
-            Surface(
-                color = Color(0xFFFFF8E7),
-                tonalElevation = 2.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(0.5.dp, Color(0xFFFFE082))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = null,
-                            tint = Color(0xFF856404),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Media auto-expires after 48h. Text stays forever.",
-                            fontSize = 11.sp,
-                            color = Color(0xFF856404),
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-
-                    Surface(
-                        color = if (simulatedTimeOffsetMs > 0) Color(0xFFE53935) else WhatsappGreen,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.clickable { onToggleFastForward() }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.HourglassTop,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (simulatedTimeOffsetMs > 0) "+50h Active (Reset)" else "Test +50h",
-                                color = Color.White,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-            }
-
             // Chat Messages List
             if (isLoadingMessages) {
                 Box(
@@ -1202,10 +1144,14 @@ fun ChatDetailScreen(
                     item { Spacer(modifier = Modifier.height(8.dp)) }
 
                     items(displayedMessages, key = { it.id }) { msg ->
+                        val memberSuffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(member.phone)
+                        val senderSuffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(msg.senderId)
                         val isMemberSender = (msg.senderId == member.id) ||
                                 (!member.firebaseUid.isNullOrBlank() && msg.senderId == member.firebaseUid) ||
-                                (member.phone.isNotBlank() && msg.senderId == member.phone)
-                        val isSelf = msg.senderId == "self" || !isMemberSender
+                                (member.phone.isNotBlank() && msg.senderId == member.phone) ||
+                                (memberSuffix.isNotBlank() && memberSuffix == senderSuffix)
+
+                        val isSelf = msg.senderId == "self" || msg.senderName == "You" || !isMemberSender
                         var offsetX by remember { mutableFloatStateOf(0f) }
                         var showReadDetails by remember { mutableStateOf(false) }
 
@@ -1243,9 +1189,9 @@ fun ChatDetailScreen(
                             }
 
                             val bubbleContainerColor = if (isDarkTheme) {
-                                if (isSelf) WhatsappDarkBubble else WhatsappDarkSurface
+                                if (isSelf) Color(0xFF005C4B) else Color(0xFF202C33)
                             } else {
-                                if (isSelf) SentBubbleGreen else ReceivedBubbleWhite
+                                if (isSelf) Color(0xFFD9FDD3) else Color(0xFFFFFFFF)
                             }
 
                             val bubbleTextColor = if (isDarkTheme) Color(0xFFE9EDEF) else Color(0xFF111B21)
@@ -1383,30 +1329,49 @@ fun ChatDetailScreen(
                                                 )
                                                 if (isSelf) {
                                                     Spacer(modifier = Modifier.width(4.dp))
-                                                    when {
-                                                        msg.isRead -> {
-                                                            Text(
-                                                                text = "°",
-                                                                color = Color(0xFF25D366),
-                                                                fontSize = 15.sp,
-                                                                fontWeight = FontWeight.Bold
-                                                            )
-                                                        }
-                                                        msg.isDelivered -> {
-                                                            Icon(
-                                                                imageVector = Icons.Default.DoneAll,
-                                                                contentDescription = "Delivered",
-                                                                tint = Color.White,
-                                                                modifier = Modifier.size(15.dp)
-                                                            )
-                                                        }
-                                                        else -> {
-                                                            Icon(
-                                                                imageVector = Icons.Default.Done,
-                                                                contentDescription = "Sent",
-                                                                tint = subTextColor,
-                                                                modifier = Modifier.size(15.dp)
-                                                            )
+                                                    val statusState = when {
+                                                        msg.isRead -> 2
+                                                        msg.isDelivered -> 1
+                                                        else -> 0
+                                                    }
+                                                    Crossfade(
+                                                        targetState = statusState,
+                                                        animationSpec = tween(durationMillis = 350),
+                                                        label = "StatusFadeAnimation"
+                                                    ) { state ->
+                                                        when (state) {
+                                                            2 -> {
+                                                                Box(
+                                                                    modifier = Modifier
+                                                                        .size(16.dp)
+                                                                        .background(Color(0xFF25D366), CircleShape),
+                                                                    contentAlignment = Alignment.Center
+                                                                ) {
+                                                                    Text(
+                                                                        text = "S",
+                                                                        color = Color.White,
+                                                                        fontSize = 9.sp,
+                                                                        fontWeight = FontWeight.Bold,
+                                                                        textAlign = TextAlign.Center
+                                                                    )
+                                                                }
+                                                            }
+                                                            1 -> {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.DoneAll,
+                                                                    contentDescription = "Delivered",
+                                                                    tint = Color.White,
+                                                                    modifier = Modifier.size(15.dp)
+                                                                )
+                                                            }
+                                                            else -> {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Done,
+                                                                    contentDescription = "Sent",
+                                                                    tint = subTextColor,
+                                                                    modifier = Modifier.size(15.dp)
+                                                                )
+                                                            }
                                                         }
                                                     }
                                                 }

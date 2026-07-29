@@ -279,7 +279,7 @@ fun FamilyMembersScreen(
                                 Box(
                                     modifier = Modifier
                                         .size(14.dp)
-                                        .background(if (member.isOnline) Color(0xFF25D366) else Color.Gray, CircleShape)
+                                        .background(if (member.isRecentlyActive()) Color(0xFF25D366) else Color.Gray, CircleShape)
                                         .border(2.dp, Color.White, CircleShape)
                                         .align(Alignment.BottomEnd)
                                 )
@@ -296,13 +296,13 @@ fun FamilyMembersScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Surface(
-                                        color = if (member.isOnline) WhatsappGreen.copy(alpha = 0.15f) else Color.Gray.copy(alpha = 0.15f),
+                                        color = if (member.isRecentlyActive()) WhatsappGreen.copy(alpha = 0.15f) else Color.Gray.copy(alpha = 0.15f),
                                         shape = RoundedCornerShape(8.dp),
                                         modifier = Modifier.clickable { onTogglePresence(member) }
                                     ) {
                                         Text(
-                                            text = if (member.isTyping) "typing..." else if (member.isOnline) "Online" else "Offline",
-                                            color = if (member.isOnline) WhatsappGreen else Color.Gray,
+                                            text = if (member.isTyping) "typing..." else if (member.isRecentlyActive()) "Online" else "Offline",
+                                            color = if (member.isRecentlyActive()) WhatsappGreen else Color.Gray,
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)

@@ -1,5 +1,7 @@
 package com.family.talkly.ui.screens.auth
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -76,7 +78,18 @@ fun ProfileSetupScreen(
     onSaveProfile: (String, String) -> Unit
 ) {
     var nameInput by remember { mutableStateOf("") }
+    var customAvatarUrl by remember { mutableStateOf<String?>(null) }
     var selectedAvatar by remember { mutableStateOf(PRESET_AVATARS[0]) }
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            customAvatarUrl = uri.toString()
+        }
+    }
+
+    val activeAvatarUrl = customAvatarUrl ?: selectedAvatar.url
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -120,7 +133,9 @@ fun ProfileSetupScreen(
 
                 // Avatar Display
                 Box(
-                    modifier = Modifier.size(110.dp),
+                    modifier = Modifier
+                        .size(110.dp)
+                        .clickable { galleryLauncher.launch("image/*") },
                     contentAlignment = Alignment.Center
                 ) {
                     Box(
@@ -131,7 +146,7 @@ fun ProfileSetupScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         AsyncImage(
-                            model = selectedAvatar.url,
+                            model = activeAvatarUrl,
                             contentDescription = "Profile Picture",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
@@ -144,7 +159,8 @@ fun ProfileSetupScreen(
                             .size(32.dp)
                             .background(WhatsappGreen, CircleShape)
                             .border(2.dp, Color.White, CircleShape)
-                            .align(Alignment.BottomEnd),
+                            .align(Alignment.BottomEnd)
+                            .clickable { galleryLauncher.launch("image/*") },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -159,7 +175,7 @@ fun ProfileSetupScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "Choose Profile Avatar:",
+                    text = "Choose Preset Avatar or Tap Above for Gallery Photo:",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.Gray
@@ -173,7 +189,7 @@ fun ProfileSetupScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     items(PRESET_AVATARS) { avatar ->
-                        val isSelected = avatar.id == selectedAvatar.id
+                        val isSelected = avatar.id == selectedAvatar.id && customAvatarUrl == null
                         Box(
                             modifier = Modifier
                                 .size(56.dp)
@@ -184,7 +200,10 @@ fun ProfileSetupScreen(
                                     color = if (isSelected) WhatsappGreen else Color.Transparent,
                                     shape = CircleShape
                                 )
-                                .clickable { selectedAvatar = avatar },
+                                .clickable {
+                                    customAvatarUrl = null
+                                    selectedAvatar = avatar
+                                },
                             contentAlignment = Alignment.Center
                         ) {
                             AsyncImage(
@@ -297,7 +316,7 @@ fun ProfileSetupScreen(
                     if (nameInput.isNotBlank()) {
                         keyboardController?.hide()
                         focusManager.clearFocus()
-                        onSaveProfile(nameInput.trim(), selectedAvatar.url)
+                        onSaveProfile(nameInput.trim(), activeAvatarUrl)
                     }
                 },
                 enabled = nameInput.isNotBlank() && !isLoading,

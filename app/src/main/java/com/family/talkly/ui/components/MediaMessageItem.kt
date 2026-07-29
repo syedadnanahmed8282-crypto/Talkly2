@@ -109,7 +109,7 @@ fun MediaMessageItem(
                 }
         ) {
             AsyncImage(
-                model = message.mediaUrl,
+                model = com.family.talkly.util.PhoneUtils.getCoilMediaModel(message.mediaUrl),
                 contentDescription = message.textContent,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxWidth().height(200.dp)

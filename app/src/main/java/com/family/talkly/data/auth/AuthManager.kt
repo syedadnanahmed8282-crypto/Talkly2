@@ -2,15 +2,24 @@ package com.family.talkly.data.auth
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Log
 import com.family.talkly.data.models.UserProfile
+import com.family.talkly.util.MediaCompressorAndUploader
 import com.family.talkly.util.PhoneUtils
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import java.io.File
+import java.io.FileOutputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 sealed class AuthState {
     object InitialCheck : AuthState()
@@ -99,8 +108,17 @@ class AuthManager(private val context: Context) {
             if (isLoggedIn && !savedUid.isNullOrEmpty()) {
                 val name = prefs.getString(KEY_NAME, "") ?: ""
                 val phone = prefs.getString(KEY_PHONE, "") ?: ""
-                val pic = prefs.getString(KEY_PROFILE_PIC, "") ?: ""
+                var pic = prefs.getString(KEY_PROFILE_PIC, "") ?: ""
                 val bio = prefs.getString(KEY_BIO, "Available on Talkly 💬") ?: "Available on Talkly 💬"
+
+                // Check if pic is a content:// URI and convert to persistent internal avatar file if available
+                if (pic.startsWith("content://") || pic.isBlank()) {
+                    val avatarDir = File(context.filesDir, "profile_avatars")
+                    val internalFile = File(avatarDir, "avatar_${savedUid}.jpg")
+                    if (internalFile.exists()) {
+                        pic = Uri.fromFile(internalFile).toString()
+                    }
+                }
 
                 if (name.isNotBlank()) {
                     val profile = UserProfile(
@@ -114,6 +132,9 @@ class AuthManager(private val context: Context) {
                 } else {
                     _authState.value = AuthState.ProfileSetupRequired(savedUid, phone)
                 }
+
+                // Always sync latest user profile from Firestore in background
+                checkUserProfileInFirestore(savedUid, phone)
             } else if (firebaseUser != null) {
                 val uid = firebaseUser.uid
                 val phone = firebaseUser.phoneNumber ?: prefs.getString(KEY_PHONE, "") ?: ""
@@ -377,32 +398,42 @@ class AuthManager(private val context: Context) {
                         val name = doc.getString("name") ?: ""
                         val phone = doc.getString("phoneNumber") ?: phoneNumber
                         val docSuffix = doc.getString("phoneSuffix") ?: PhoneUtils.extractPhoneSuffix(phone)
-                        val pic = doc.getString("profilePicUrl") ?: ""
+                        val docPic = doc.getString("profilePicUrl") ?: ""
                         val bio = doc.getString("bio") ?: "Available on Talkly 💬"
+
+                        // Local stored picture fallback check
+                        val localStoredPic = prefs.getString(KEY_PROFILE_PIC, "") ?: ""
+                        val finalPic = if (docPic.startsWith("http://") || docPic.startsWith("https://")) {
+                            docPic
+                        } else if (localStoredPic.isNotBlank() && !localStoredPic.startsWith("content://")) {
+                            localStoredPic
+                        } else {
+                            docPic
+                        }
+
                         val profile = UserProfile(
                             uid = uid,
                             name = name,
                             phoneNumber = phone,
                             phoneSuffix = docSuffix,
-                            profilePicUrl = pic,
+                            profilePicUrl = finalPic,
                             bio = bio
                         )
-                        saveLocalSession(uid, name, phone, pic, bio)
+                        saveLocalSession(uid, name, phone, finalPic, bio)
                         _authState.value = AuthState.Authenticated(profile)
                     } else {
-                        saveLocalSession(uid, "", phoneNumber, "", "")
-                        _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
+                        val localName = prefs.getString(KEY_NAME, "") ?: ""
+                        if (localName.isBlank()) {
+                            saveLocalSession(uid, "", phoneNumber, "", "")
+                            _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
+                        }
                     }
                 }
                 .addOnFailureListener { e ->
                     Log.w(TAG, "Firestore user profile read failed: ${e.localizedMessage}")
-                    saveLocalSession(uid, "", phoneNumber, "", "")
-                    _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
                 }
         } catch (e: Exception) {
             Log.w(TAG, "Firestore user profile exception: ${e.localizedMessage}")
-            saveLocalSession(uid, "", phoneNumber, "", "")
-            _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
         }
     }
 
@@ -436,27 +467,71 @@ class AuthManager(private val context: Context) {
         }
 
         val phoneSuffix = PhoneUtils.extractPhoneSuffix(phone)
-        saveLocalSession(uid, name, phone, profilePicUrl, bio)
+
+        // Persistent image processing for local Uri strings (content:// or file://)
+        var persistentLocalPicUrl = profilePicUrl
+        var localImageFile: File? = null
+
+        if (profilePicUrl.startsWith("content://") || (profilePicUrl.startsWith("file://") && !profilePicUrl.contains("profile_avatars"))) {
+            try {
+                val uri = Uri.parse(profilePicUrl)
+                val avatarDir = File(context.filesDir, "profile_avatars").apply { mkdirs() }
+                val destFile = File(avatarDir, "avatar_${uid}.jpg")
+
+                val inputStream = context.contentResolver.openInputStream(uri)
+                if (inputStream != null) {
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeStream(context.contentResolver.openInputStream(uri), null, options)
+
+                    val maxDim = maxOf(options.outWidth, options.outHeight)
+                    var sampleSize = 1
+                    while (maxDim / sampleSize > 1080) { sampleSize *= 2 }
+
+                    val decodeOptions = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    val bitmap = BitmapFactory.decodeStream(inputStream, null, decodeOptions)
+                    inputStream.close()
+
+                    if (bitmap != null) {
+                        val outStream = FileOutputStream(destFile)
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outStream)
+                        outStream.flush()
+                        outStream.close()
+                        bitmap.recycle()
+
+                        localImageFile = destFile
+                        persistentLocalPicUrl = Uri.fromFile(destFile).toString()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to copy/compress local profile image: ${e.localizedMessage}")
+            }
+        }
+
+        // Save local session immediately with persistent local file or HTTP URL
+        saveLocalSession(uid, name, phone, persistentLocalPicUrl, bio)
         val profile = UserProfile(
             uid = uid,
             name = name,
             phoneNumber = phone,
             phoneSuffix = phoneSuffix,
-            profilePicUrl = profilePicUrl,
+            profilePicUrl = persistentLocalPicUrl,
             bio = bio
         )
         _authState.value = AuthState.Authenticated(profile)
         onSuccess()
 
-        val profileMap = mapOf(
+        // Write initial document to Firestore
+        val profileMap = mutableMapOf<String, Any>(
             "uid" to uid,
             "name" to name,
             "phoneNumber" to phone,
             "phoneSuffix" to phoneSuffix,
             "email" to getInternalEmail(phone),
-            "profilePicUrl" to profilePicUrl,
+            "profilePicUrl" to persistentLocalPicUrl,
             "bio" to bio,
-            "createdAt" to System.currentTimeMillis(),
             "updatedAt" to System.currentTimeMillis()
         )
 
@@ -471,6 +546,38 @@ class AuthManager(private val context: Context) {
                 }
         } catch (e: Exception) {
             Log.w(TAG, "Firestore user save exception: ${e.localizedMessage}")
+        }
+
+        // Upload to Firebase Storage in background coroutine so other users receive HTTP URL
+        val targetUploadFile = localImageFile ?: if (persistentLocalPicUrl.startsWith("file://")) {
+            try { File(Uri.parse(persistentLocalPicUrl).path ?: "") } catch (e: Exception) { null }
+        } else null
+
+        if (targetUploadFile != null && targetUploadFile.exists()) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val uploader = MediaCompressorAndUploader(context)
+                    val remotePath = "profile_pictures/${uid}.jpg"
+                    val downloadUrl = uploader.uploadToFirebaseStorage(targetUploadFile, remotePath) { _, _ -> }
+
+                    if (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
+                        Log.d(TAG, "Uploaded profile picture to Firebase Storage: $downloadUrl")
+                        // Update local session
+                        saveLocalSession(uid, name, phone, downloadUrl, bio)
+                        val updatedProfile = profile.copy(profilePicUrl = downloadUrl)
+                        _authState.value = AuthState.Authenticated(updatedProfile)
+
+                        // Update Firestore user document
+                        getFirestore().collection("users").document(uid)
+                            .update("profilePicUrl", downloadUrl)
+                            .addOnSuccessListener {
+                                Log.d(TAG, "Updated Firestore profilePicUrl to Firebase Storage download URL")
+                            }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Firebase Storage profile upload failed: ${e.localizedMessage}")
+                }
+            }
         }
     }
 

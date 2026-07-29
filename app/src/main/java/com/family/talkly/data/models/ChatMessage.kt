@@ -23,7 +23,7 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val callType: String? = null, // "AUDIO" or "VIDEO"
     val callDurationSec: Int = 0,
-    val isDelivered: Boolean = true,
+    val isDelivered: Boolean = false,
     val isRead: Boolean = false,
     val readAtTimestamp: Long? = null,
     val reaction: String? = null,

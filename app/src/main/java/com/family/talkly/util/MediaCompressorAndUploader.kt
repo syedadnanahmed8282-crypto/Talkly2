@@ -38,8 +38,8 @@ class MediaCompressorAndUploader(private val context: Context) {
 
     companion object {
         private const val TAG = "MediaCompressor"
-        private const val MAX_IMAGE_DIMENSION = 1080 // 1080p target max width/height
-        private const val JPEG_QUALITY = 75 // 70-80% quality
+        private const val MAX_IMAGE_DIMENSION = 800 // 800px target max width/height for optimal Base64 & Storage
+        private const val JPEG_QUALITY = 70 // 70% quality
         private const val TARGET_VIDEO_BITRATE = 1_800_000 // ~1.8 Mbps
     }
 
@@ -249,12 +249,23 @@ class MediaCompressorAndUploader(private val context: Context) {
             if (uploadTask.isSuccessful && downloadUrlStr != null) {
                 downloadUrlStr!!
             } else {
-                Log.w(TAG, "Firebase Storage offline or incomplete. Using compressed local Uri.")
-                Uri.fromFile(file).toString()
+                Log.w(TAG, "Firebase Storage offline or incomplete. Encoding compressed file to Base64 data string.")
+                encodeFileToBase64(file)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Firebase Storage upload error fallback: ${e.localizedMessage}")
-            // Return compressed local File Uri so media still functions smoothly offline
+            encodeFileToBase64(file)
+        }
+    }
+
+    fun encodeFileToBase64(file: File): String {
+        return try {
+            val bytes = file.readBytes()
+            val base64Str = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            val mime = if (file.name.endsWith(".mp4", ignoreCase = true)) "video/mp4" else "image/jpeg"
+            "data:$mime;base64,$base64Str"
+        } catch (e: Exception) {
+            Log.e(TAG, "Error encoding file to base64: ${e.localizedMessage}")
             Uri.fromFile(file).toString()
         }
     }

@@ -64,7 +64,7 @@ fun FullMediaViewerDialog(
                 // Media Content
                 if (message.mediaUrl != null) {
                     AsyncImage(
-                        model = message.mediaUrl,
+                        model = com.family.talkly.util.PhoneUtils.getCoilMediaModel(message.mediaUrl),
                         contentDescription = "Full Media",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize()

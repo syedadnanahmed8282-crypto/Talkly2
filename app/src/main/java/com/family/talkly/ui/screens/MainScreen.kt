@@ -17,7 +17,11 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -81,6 +85,47 @@ fun MainScreen(
     androidx.compose.runtime.LaunchedEffect(currentUserProfile?.uid) {
         if (currentUserProfile != null && currentUserProfile.uid.isNotBlank()) {
             chatRepository.startRealtimeMessageSync(currentUserProfile.uid)
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, currentUserProfile?.uid) {
+        val uid = currentUserProfile?.uid
+        val observer = LifecycleEventObserver { _, event ->
+            if (uid.isNullOrBlank()) return@LifecycleEventObserver
+            when (event) {
+                Lifecycle.Event.ON_START, Lifecycle.Event.ON_RESUME -> {
+                    chatRepository.setMemberPresence(
+                        memberId = uid,
+                        isOnline = true,
+                        lastSeen = "Online",
+                        lastActiveTimestamp = System.currentTimeMillis()
+                    )
+                }
+                Lifecycle.Event.ON_STOP, Lifecycle.Event.ON_PAUSE -> {
+                    val now = System.currentTimeMillis()
+                    chatRepository.setMemberPresence(
+                        memberId = uid,
+                        isOnline = false,
+                        lastSeen = com.family.talkly.util.PhoneUtils.formatLastSeenTime(now),
+                        lastActiveTimestamp = now
+                    )
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            if (!uid.isNullOrBlank()) {
+                val now = System.currentTimeMillis()
+                chatRepository.setMemberPresence(
+                    memberId = uid,
+                    isOnline = false,
+                    lastSeen = com.family.talkly.util.PhoneUtils.formatLastSeenTime(now),
+                    lastActiveTimestamp = now
+                )
+            }
         }
     }
 
@@ -265,10 +310,11 @@ fun MainScreen(
         },
         statusGroups = statusGroups,
         onPostStatus = { textContent, photoUrl, bgHex ->
+            val currentUid = currentUserProfile?.uid?.ifBlank { "self" } ?: "self"
             val userName = currentUserProfile?.name?.ifBlank { "You" } ?: "You"
             val userAvatar = currentUserProfile?.profilePicUrl?.ifBlank { null }
             chatRepository.postStatus(
-                userId = "self",
+                userId = currentUid,
                 userName = userName,
                 userAvatarUrl = userAvatar,
                 textContent = textContent,
@@ -277,12 +323,16 @@ fun MainScreen(
             )
         },
         onMarkStatusSeen = { statusId ->
-            chatRepository.markStatusAsSeen(statusId)
-        },
-        onToggleLikeStatus = { statusId ->
+            val currentUid = currentUserProfile?.uid?.ifBlank { "self" } ?: "self"
             val userName = currentUserProfile?.name?.ifBlank { "You" } ?: "You"
             val userAvatar = currentUserProfile?.profilePicUrl?.ifBlank { null }
-            chatRepository.toggleStatusLike(statusId, "self", userName, userAvatar)
+            chatRepository.markStatusAsSeen(statusId, currentUid, userName, userAvatar)
+        },
+        onToggleLikeStatus = { statusId ->
+            val currentUid = currentUserProfile?.uid?.ifBlank { "self" } ?: "self"
+            val userName = currentUserProfile?.name?.ifBlank { "You" } ?: "You"
+            val userAvatar = currentUserProfile?.profilePicUrl?.ifBlank { null }
+            chatRepository.toggleStatusLike(statusId, currentUid, userName, userAvatar)
         },
         onSendStatusReply = { targetUserId, replyText ->
             chatRepository.sendMessage(

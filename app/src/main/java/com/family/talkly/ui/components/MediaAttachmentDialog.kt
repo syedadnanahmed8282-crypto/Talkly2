@@ -507,7 +507,7 @@ fun MediaPreviewAndTagDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         AsyncImage(
-                            model = mediaUrl,
+                            model = com.family.talkly.util.PhoneUtils.getCoilMediaModel(mediaUrl),
                             contentDescription = "Media Preview",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxWidth().height(180.dp)

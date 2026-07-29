@@ -77,6 +77,7 @@ import java.util.Locale
 fun StatusViewerDialog(
     statusGroups: List<UserStatusGroup>,
     initialGroupIndex: Int = 0,
+    currentUserId: String = "self",
     onDismiss: () -> Unit,
     onMarkStatusSeen: (statusId: String) -> Unit,
     onAddStatusClick: (() -> Unit)? = null,
@@ -100,8 +101,8 @@ fun StatusViewerDialog(
 
     var showAnalyticsDialog by remember { mutableStateOf(false) }
     var replyText by remember { mutableStateOf("") }
-    var isLikedByMe by remember(currentStatus.id) {
-        mutableStateOf(currentStatus.likes.any { it.userId == "self" })
+    var isLikedByMe by remember(currentStatus.id, currentStatus.likes) {
+        mutableStateOf(currentStatus.likes.any { it.userId == currentUserId || it.userId == "self" })
     }
 
     // Mark current status as seen
@@ -192,7 +193,7 @@ fun StatusViewerDialog(
             // Background Photo Status
             if (currentStatus.photoUrl != null) {
                 AsyncImage(
-                    model = currentStatus.photoUrl,
+                    model = com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentStatus.photoUrl),
                     contentDescription = "Status image",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop

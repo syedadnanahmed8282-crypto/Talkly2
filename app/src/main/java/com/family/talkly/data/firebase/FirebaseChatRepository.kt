@@ -1,6 +1,9 @@
 package com.family.talkly.data.firebase
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -8,11 +11,17 @@ import com.family.talkly.data.models.ChatMessage
 import com.family.talkly.data.models.DEFAULT_FAMILY_MEMBERS
 import com.family.talkly.data.models.FamilyMember
 import com.family.talkly.data.models.MessageType
+import com.family.talkly.util.MediaCompressorAndUploader
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import java.io.File
+import java.io.FileOutputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 import com.family.talkly.data.models.StatusItem
 import com.family.talkly.data.models.UserStatusGroup
@@ -34,6 +43,7 @@ class FirebaseChatRepository(private val context: Context) {
     private var firestore: FirebaseFirestore? = null
     private var membersListener: ListenerRegistration? = null
     private var messagesListener: ListenerRegistration? = null
+    private var statusesListener: ListenerRegistration? = null
     private var currentSyncedUserId: String? = null
     private val contactPrefs = context.getSharedPreferences(CONTACTS_PREFS, Context.MODE_PRIVATE)
 
@@ -68,6 +78,7 @@ class FirebaseChatRepository(private val context: Context) {
             Log.i(TAG, "Initialized Firebase Firestore for project $FIREBASE_PROJECT_ID")
             setupFirestorePresenceListener()
             setupFirestoreUsersVerificationListener()
+            setupFirestoreStatusesListener()
         } catch (e: Exception) {
             Log.w(TAG, "Firebase Firestore init fallback mode: ${e.localizedMessage}")
         }
@@ -125,6 +136,7 @@ class FirebaseChatRepository(private val context: Context) {
                         isOnline = obj.optBoolean("isOnline", true),
                         isTyping = false,
                         lastSeen = obj.optString("lastSeen", "Recently"),
+                        lastActiveTimestamp = obj.optLong("lastActiveTimestamp", System.currentTimeMillis()),
                         unreadCount = obj.optInt("unreadCount", 0),
                         isPinned = obj.optBoolean("isPinned", false),
                         isRegisteredOnTalkly = obj.optBoolean("isRegisteredOnTalkly", false),
@@ -156,6 +168,7 @@ class FirebaseChatRepository(private val context: Context) {
                     put("phone", member.phone)
                     put("isOnline", member.isOnline)
                     put("lastSeen", member.lastSeen)
+                    put("lastActiveTimestamp", member.lastActiveTimestamp)
                     put("unreadCount", member.unreadCount)
                     put("isPinned", member.isPinned)
                     put("isRegisteredOnTalkly", member.isRegisteredOnTalkly)
@@ -344,10 +357,12 @@ class FirebaseChatRepository(private val context: Context) {
                                 val online = doc.getBoolean("isOnline") ?: member.isOnline
                                 val typing = doc.getBoolean("isTyping") ?: member.isTyping
                                 val seen = doc.getString("lastSeen") ?: member.lastSeen
+                                val activeTs = doc.getLong("lastActiveTimestamp") ?: member.lastActiveTimestamp
                                 member.copy(
                                     isOnline = online,
                                     isTyping = typing,
-                                    lastSeen = seen
+                                    lastSeen = seen,
+                                    lastActiveTimestamp = activeTs
                                 )
                             } else {
                                 member
@@ -380,10 +395,20 @@ class FirebaseChatRepository(private val context: Context) {
         }
     }
 
-    fun setMemberPresence(memberId: String, isOnline: Boolean, lastSeen: String = if (isOnline) "Online" else "Just now") {
+    fun setMemberPresence(
+        memberId: String,
+        isOnline: Boolean,
+        lastSeen: String = if (isOnline) "Online" else com.family.talkly.util.PhoneUtils.formatLastSeenTime(System.currentTimeMillis()),
+        lastActiveTimestamp: Long = System.currentTimeMillis()
+    ) {
         val currentList = _familyMembers.value.map { member ->
-            if (member.id == memberId) {
-                member.copy(isOnline = isOnline, lastSeen = lastSeen, isTyping = if (!isOnline) false else member.isTyping)
+            if (member.id == memberId || member.firebaseUid == memberId) {
+                member.copy(
+                    isOnline = isOnline,
+                    lastSeen = lastSeen,
+                    lastActiveTimestamp = lastActiveTimestamp,
+                    isTyping = if (!isOnline) false else member.isTyping
+                )
             } else {
                 member
             }
@@ -391,12 +416,19 @@ class FirebaseChatRepository(private val context: Context) {
         _familyMembers.value = currentList
 
         try {
+            val presenceMap = mapOf(
+                "isOnline" to isOnline,
+                "lastSeen" to lastSeen,
+                "lastActiveTimestamp" to lastActiveTimestamp,
+                "isTyping" to if (!isOnline) false else false
+            )
             firestore?.collection("family_members")
                 ?.document(memberId)
-                ?.set(
-                    mapOf("isOnline" to isOnline, "lastSeen" to lastSeen, "isTyping" to if (!isOnline) false else false),
-                    com.google.firebase.firestore.SetOptions.merge()
-                )
+                ?.set(presenceMap, com.google.firebase.firestore.SetOptions.merge())
+
+            firestore?.collection("users")
+                ?.document(memberId)
+                ?.set(presenceMap, com.google.firebase.firestore.SetOptions.merge())
         } catch (e: Exception) {
             Log.w(TAG, "Firestore setPresence error: ${e.localizedMessage}")
         }
@@ -470,12 +502,18 @@ class FirebaseChatRepository(private val context: Context) {
                                 val bio = matchedDoc.getString("bio") ?: member.status
                                 val pic = matchedDoc.getString("profilePicUrl") ?: member.avatarUrl
                                 val realName = matchedDoc.getString("name") ?: member.name
+                                val online = matchedDoc.getBoolean("isOnline") ?: member.isOnline
+                                val seen = matchedDoc.getString("lastSeen") ?: member.lastSeen
+                                val activeTs = matchedDoc.getLong("lastActiveTimestamp") ?: member.lastActiveTimestamp
                                 member.copy(
                                     name = if (realName.isNotBlank()) realName else member.name,
                                     isRegisteredOnTalkly = true,
                                     firebaseUid = uid,
                                     avatarUrl = if (!pic.isNullOrBlank()) pic else member.avatarUrl,
-                                    status = if (bio.isBlank()) "Available on Talkly 💬" else bio
+                                    status = if (bio.isBlank()) "Available on Talkly 💬" else bio,
+                                    isOnline = online,
+                                    lastSeen = seen,
+                                    lastActiveTimestamp = activeTs
                                 )
                             } else {
                                 member.copy(
@@ -525,33 +563,57 @@ class FirebaseChatRepository(private val context: Context) {
         _messagesMap.value = emptyMap()
     }
 
+    fun getCanonicalMemberId(memberOrUidOrPhone: String): String {
+        if (memberOrUidOrPhone.isBlank()) return memberOrUidOrPhone
+        val suffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(memberOrUidOrPhone)
+        val existing = _familyMembers.value.firstOrNull { member ->
+            member.id == memberOrUidOrPhone ||
+            member.firebaseUid == memberOrUidOrPhone ||
+            member.phone == memberOrUidOrPhone ||
+            (suffix.isNotBlank() && com.family.talkly.util.PhoneUtils.extractPhoneSuffix(member.phone) == suffix)
+        }
+        return existing?.id ?: memberOrUidOrPhone
+    }
+
     fun getMessagesForMember(memberId: String): List<ChatMessage> {
-        return _messagesMap.value[memberId] ?: emptyList()
+        val canonicalId = getCanonicalMemberId(memberId)
+        return _messagesMap.value[canonicalId] ?: _messagesMap.value[memberId] ?: emptyList()
     }
 
     fun markMessagesAsRead(memberId: String) {
-        val currentMessages = _messagesMap.value[memberId] ?: return
+        val canonicalId = getCanonicalMemberId(memberId)
+        val currentMessages = getMessagesForMember(canonicalId)
+        if (currentMessages.isEmpty()) return
         var updatedAny = false
 
+        val currentUid = currentSyncedUserId ?: "self"
+
         val updatedMessages = currentMessages.map { msg ->
-            if (msg.senderId != "self" && !msg.isRead) {
+            if (msg.senderId != "self" && msg.senderId != currentUid && !msg.isRead) {
                 updatedAny = true
                 val now = System.currentTimeMillis()
                 val readMsg = msg.copy(isRead = true, readAtTimestamp = now, isDelivered = true)
 
                 // Sync read status to Firestore
                 try {
+                    val updateData = mapOf(
+                        "isRead" to true,
+                        "readAtTimestamp" to now,
+                        "isDelivered" to true
+                    )
                     firestore?.collection("family_chats")
-                        ?.document(memberId)
+                        ?.document(msg.senderId)
                         ?.collection("messages")
                         ?.document(msg.id)
-                        ?.update(
-                            mapOf(
-                                "isRead" to true,
-                                "readAtTimestamp" to now,
-                                "isDelivered" to true
-                            )
-                        )
+                        ?.update(updateData)
+
+                    if (!currentUid.isBlank() && currentUid != "self") {
+                        firestore?.collection("family_chats")
+                            ?.document(currentUid)
+                            ?.collection("messages")
+                            ?.document(msg.id)
+                            ?.update(updateData)
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Error updating read receipt in Firestore: ${e.localizedMessage}")
                 }
@@ -564,21 +626,24 @@ class FirebaseChatRepository(private val context: Context) {
 
         if (updatedAny) {
             val updatedMap = _messagesMap.value.toMutableMap()
-            updatedMap[memberId] = updatedMessages
+            updatedMap[canonicalId] = updatedMessages
+            if (canonicalId != memberId) {
+                updatedMap[memberId] = updatedMessages
+            }
             _messagesMap.value = updatedMap
         }
 
         // Reset unread count for member in list and Firestore
-        val member = _familyMembers.value.firstOrNull { it.id == memberId }
+        val member = _familyMembers.value.firstOrNull { it.id == canonicalId || it.id == memberId }
         if (member != null && member.unreadCount > 0) {
             val updatedMembers = _familyMembers.value.map { m ->
-                if (m.id == memberId) m.copy(unreadCount = 0) else m
+                if (m.id == member.id) m.copy(unreadCount = 0) else m
             }
             _familyMembers.value = updatedMembers
 
             try {
                 firestore?.collection("family_members")
-                    ?.document(memberId)
+                    ?.document(member.id)
                     ?.update("unreadCount", 0)
             } catch (e: Exception) {
                 Log.w(TAG, "Error resetting unread count in Firestore: ${e.localizedMessage}")
@@ -587,7 +652,9 @@ class FirebaseChatRepository(private val context: Context) {
     }
 
     fun toggleMessageReaction(memberId: String, messageId: String, reactionEmoji: String) {
-        val currentMessages = _messagesMap.value[memberId] ?: return
+        val canonicalId = getCanonicalMemberId(memberId)
+        val currentMessages = getMessagesForMember(canonicalId)
+        if (currentMessages.isEmpty()) return
         val updatedMessages = currentMessages.map { msg ->
             if (msg.id == messageId) {
                 val newReaction = if (msg.reaction == reactionEmoji) null else reactionEmoji
@@ -595,7 +662,7 @@ class FirebaseChatRepository(private val context: Context) {
                 
                 try {
                     firestore?.collection("family_chats")
-                        ?.document(memberId)
+                        ?.document(canonicalId)
                         ?.collection("messages")
                         ?.document(messageId)
                         ?.update("reaction", newReaction)
@@ -610,19 +677,24 @@ class FirebaseChatRepository(private val context: Context) {
         }
         
         val updatedMap = _messagesMap.value.toMutableMap()
-        updatedMap[memberId] = updatedMessages
+        updatedMap[canonicalId] = updatedMessages
+        if (canonicalId != memberId) {
+            updatedMap[memberId] = updatedMessages
+        }
         _messagesMap.value = updatedMap
     }
 
     fun toggleStarMessage(memberId: String, messageId: String) {
-        val currentMessages = _messagesMap.value[memberId] ?: return
+        val canonicalId = getCanonicalMemberId(memberId)
+        val currentMessages = getMessagesForMember(canonicalId)
+        if (currentMessages.isEmpty()) return
         val updatedMessages = currentMessages.map { msg ->
             if (msg.id == messageId) {
                 val newStarred = !msg.isStarred
                 val updatedMsg = msg.copy(isStarred = newStarred)
                 try {
                     firestore?.collection("family_chats")
-                        ?.document(memberId)
+                        ?.document(canonicalId)
                         ?.collection("messages")
                         ?.document(messageId)
                         ?.update("isStarred", newStarred)
@@ -635,19 +707,24 @@ class FirebaseChatRepository(private val context: Context) {
             }
         }
         val updatedMap = _messagesMap.value.toMutableMap()
-        updatedMap[memberId] = updatedMessages
+        updatedMap[canonicalId] = updatedMessages
+        if (canonicalId != memberId) {
+            updatedMap[memberId] = updatedMessages
+        }
         _messagesMap.value = updatedMap
     }
 
     fun togglePinMessage(memberId: String, messageId: String) {
-        val currentMessages = _messagesMap.value[memberId] ?: return
+        val canonicalId = getCanonicalMemberId(memberId)
+        val currentMessages = getMessagesForMember(canonicalId)
+        if (currentMessages.isEmpty()) return
         val updatedMessages = currentMessages.map { msg ->
             if (msg.id == messageId) {
                 val newPinned = !msg.isPinned
                 val updatedMsg = msg.copy(isPinned = newPinned)
                 try {
                     firestore?.collection("family_chats")
-                        ?.document(memberId)
+                        ?.document(canonicalId)
                         ?.collection("messages")
                         ?.document(messageId)
                         ?.update("isPinned", newPinned)
@@ -660,7 +737,10 @@ class FirebaseChatRepository(private val context: Context) {
             }
         }
         val updatedMap = _messagesMap.value.toMutableMap()
-        updatedMap[memberId] = updatedMessages
+        updatedMap[canonicalId] = updatedMessages
+        if (canonicalId != memberId) {
+            updatedMap[memberId] = updatedMessages
+        }
         _messagesMap.value = updatedMap
     }
 
@@ -715,10 +795,34 @@ class FirebaseChatRepository(private val context: Context) {
                                 val type = try { MessageType.valueOf(typeStr) } catch (e: Exception) { MessageType.TEXT }
                                 val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
                                 val isRead = doc.getBoolean("isRead") ?: false
-                                val isDelivered = doc.getBoolean("isDelivered") ?: true
+                                val rawDelivered = doc.getBoolean("isDelivered")
+                                val isDelivered = rawDelivered ?: isRead
                                 val readAtTimestamp = doc.getLong("readAtTimestamp")
                                 val isStarred = doc.getBoolean("isStarred") ?: false
                                 val isPinned = doc.getBoolean("isPinned") ?: false
+
+                                // If this is an incoming message to current user that hasn't been marked delivered yet, update Firestore
+                                if (senderId != "self" && senderId != currentUserId && !isDelivered) {
+                                    try {
+                                        val updateData = mapOf("isDelivered" to true)
+                                        firestore?.collection("family_chats")
+                                            ?.document(senderId)
+                                            ?.collection("messages")
+                                            ?.document(id)
+                                            ?.update(updateData)
+                                        if (!currentUserId.isNullOrBlank()) {
+                                            firestore?.collection("family_chats")
+                                                ?.document(currentUserId)
+                                                ?.collection("messages")
+                                                ?.document(id)
+                                                ?.update(updateData)
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Error updating delivery status in Firestore: ${e.localizedMessage}")
+                                    }
+                                }
+
+                                val finalDelivered = if (senderId != "self" && senderId != currentUserId) true else isDelivered
 
                                 val message = ChatMessage(
                                     id = id,
@@ -729,27 +833,39 @@ class FirebaseChatRepository(private val context: Context) {
                                     textContent = textContent,
                                     mediaUrl = mediaUrl,
                                     timestamp = timestamp,
-                                    isDelivered = isDelivered,
+                                    isDelivered = finalDelivered,
                                     isRead = isRead,
                                     readAtTimestamp = readAtTimestamp,
                                     isStarred = isStarred,
                                     isPinned = isPinned
                                 )
 
-                                val otherPartyId = if (senderId == "self" || senderId == currentUserId) receiverId else senderId
-                                if (otherPartyId.isBlank()) continue
+                                val rawOtherPartyId = if (senderId == "self" || senderId == currentUserId) receiverId else senderId
+                                if (rawOtherPartyId.isBlank()) continue
 
-                                ensureContactInChatList(otherPartyId)
+                                val canonicalOtherPartyId = getCanonicalMemberId(rawOtherPartyId)
+                                ensureContactInChatList(canonicalOtherPartyId)
 
-                                val existingMsgs = (currentMap[otherPartyId] ?: emptyList()).toMutableList()
+                                val existingMsgs = (currentMap[canonicalOtherPartyId] ?: currentMap[rawOtherPartyId] ?: emptyList()).toMutableList()
                                 val existingIndex = existingMsgs.indexOfFirst { it.id == id }
                                 if (existingIndex >= 0) {
-                                    existingMsgs[existingIndex] = message
+                                    val existing = existingMsgs[existingIndex]
+                                    val preservedDelivered = existing.isDelivered || message.isDelivered
+                                    val preservedRead = existing.isRead || message.isRead
+                                    val preservedReadAt = message.readAtTimestamp ?: existing.readAtTimestamp
+                                    existingMsgs[existingIndex] = message.copy(
+                                        isDelivered = preservedDelivered,
+                                        isRead = preservedRead,
+                                        readAtTimestamp = preservedReadAt
+                                    )
                                 } else {
                                     existingMsgs.add(message)
                                 }
                                 existingMsgs.sortBy { it.timestamp }
-                                currentMap[otherPartyId] = existingMsgs
+                                currentMap[canonicalOtherPartyId] = existingMsgs
+                                if (canonicalOtherPartyId != rawOtherPartyId) {
+                                    currentMap[rawOtherPartyId] = existingMsgs
+                                }
 
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error parsing chat message doc ${doc.id}: ${e.message}")
@@ -851,32 +967,38 @@ class FirebaseChatRepository(private val context: Context) {
         replyToSenderName: String? = null,
         replyToText: String? = null
     ) {
-        ensureContactInChatList(memberId)
+        val canonicalId = getCanonicalMemberId(memberId)
+        ensureContactInChatList(canonicalId)
 
         val senderUid = currentSyncedUserId ?: "self"
         val newMessage = ChatMessage(
             id = "msg_${System.currentTimeMillis()}",
             senderId = senderUid,
             senderName = "You",
-            receiverId = memberId,
+            receiverId = canonicalId,
             messageType = type,
             textContent = textContent,
             mediaUrl = mediaUrl,
             timestamp = forcedTimestamp,
+            isDelivered = false,
+            isRead = false,
             replyToMessageId = replyToMessageId,
             replyToSenderName = replyToSenderName,
             replyToText = replyToText
         )
 
-        val currentList = (_messagesMap.value[memberId] ?: emptyList()).toMutableList()
+        val currentList = (getMessagesForMember(canonicalId)).toMutableList()
         currentList.add(newMessage)
 
         val updatedMap = _messagesMap.value.toMutableMap()
-        updatedMap[memberId] = currentList
+        updatedMap[canonicalId] = currentList
+        if (canonicalId != memberId) {
+            updatedMap[memberId] = currentList
+        }
         _messagesMap.value = updatedMap
 
         // Sync to Firebase Firestore for both receiver and sender
-        val targetUid = _familyMembers.value.firstOrNull { it.id == memberId }?.firebaseUid ?: memberId
+        val targetUid = _familyMembers.value.firstOrNull { it.id == canonicalId || it.id == memberId }?.firebaseUid ?: canonicalId
         try {
             // Write to Receiver's collection
             firestore?.collection("family_chats")
@@ -921,6 +1043,103 @@ class FirebaseChatRepository(private val context: Context) {
 
     // --- 24-HOUR DISAPPEARING STATUS METHODS ---
 
+    private fun setupFirestoreStatusesListener() {
+        try {
+            statusesListener?.remove()
+            statusesListener = firestore?.collection("statuses")
+                ?.addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Firestore statuses listener error: ${error.localizedMessage}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        val firestoreStatuses = mutableListOf<StatusItem>()
+                        for (doc in snapshot.documents) {
+                            try {
+                                val id = doc.id
+                                val userId = doc.getString("userId") ?: ""
+                                val userName = doc.getString("userName") ?: ""
+                                val userAvatarUrl = doc.getString("userAvatarUrl")
+                                val textContent = doc.getString("textContent")
+                                val photoUrl = doc.getString("photoUrl")
+                                val backgroundColorHex = doc.getString("backgroundColorHex") ?: "#321C3B"
+                                val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
+                                val isVideo = doc.getBoolean("isVideo") ?: false
+
+                                val viewersList = mutableListOf<StatusViewer>()
+                                val rawViewers = doc.get("viewers") as? List<*>
+                                rawViewers?.forEach { v ->
+                                    if (v is Map<*, *>) {
+                                        val vUid = v["userId"]?.toString() ?: ""
+                                        val vName = v["userName"]?.toString() ?: ""
+                                        val vAvatar = v["userAvatarUrl"]?.toString()
+                                        val vTime = v["timeAgo"]?.toString() ?: "Recently"
+                                        if (vUid.isNotBlank()) {
+                                            viewersList.add(StatusViewer(vUid, vName, vAvatar, vTime))
+                                        }
+                                    }
+                                }
+
+                                val likesList = mutableListOf<StatusLiker>()
+                                val rawLikes = doc.get("likes") as? List<*>
+                                rawLikes?.forEach { l ->
+                                    if (l is Map<*, *>) {
+                                        val lUid = l["userId"]?.toString() ?: ""
+                                        val lName = l["userName"]?.toString() ?: ""
+                                        val lAvatar = l["userAvatarUrl"]?.toString()
+                                        if (lUid.isNotBlank()) {
+                                            likesList.add(StatusLiker(lUid, lName, lAvatar))
+                                        }
+                                    }
+                                }
+
+                                val existingLocal = _statuses.value.firstOrNull { it.id == id }
+                                val isSeen = existingLocal?.isSeen ?: false
+
+                                val item = StatusItem(
+                                    id = id,
+                                    userId = userId,
+                                    userName = userName,
+                                    userAvatarUrl = userAvatarUrl,
+                                    textContent = textContent,
+                                    photoUrl = photoUrl,
+                                    isVideo = isVideo,
+                                    backgroundColorHex = backgroundColorHex,
+                                    timestamp = timestamp,
+                                    isSeen = isSeen,
+                                    viewers = viewersList,
+                                    likes = likesList
+                                )
+
+                                if (!item.isExpired(_simulatedTimeOffsetMs.value)) {
+                                    firestoreStatuses.add(item)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Error parsing status doc ${doc.id}: ${e.localizedMessage}")
+                            }
+                        }
+
+                        if (firestoreStatuses.isNotEmpty()) {
+                            val mergedMap = mutableMapOf<String, StatusItem>()
+                            _statuses.value.forEach { local ->
+                                if (!local.isExpired(_simulatedTimeOffsetMs.value)) {
+                                    mergedMap[local.id] = local
+                                }
+                            }
+                            firestoreStatuses.forEach { remote ->
+                                mergedMap[remote.id] = remote
+                            }
+
+                            _statuses.value = mergedMap.values.sortedByDescending { it.timestamp }
+                            saveStatusesToPrefs()
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to setup Firestore statuses listener: ${e.localizedMessage}")
+        }
+    }
+
     private fun loadStatuses() {
         val savedStatusesJson = contactPrefs.getString(KEY_STATUSES_JSON, null)
         val loadedList = mutableListOf<StatusItem>()
@@ -930,6 +1149,38 @@ class FirebaseChatRepository(private val context: Context) {
                 val jsonArray = org.json.JSONArray(savedStatusesJson)
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
+
+                    val viewers = mutableListOf<StatusViewer>()
+                    if (obj.has("viewers") && !obj.isNull("viewers")) {
+                        val vArray = obj.getJSONArray("viewers")
+                        for (j in 0 until vArray.length()) {
+                            val vObj = vArray.getJSONObject(j)
+                            viewers.add(
+                                StatusViewer(
+                                    userId = vObj.getString("userId"),
+                                    userName = vObj.getString("userName"),
+                                    userAvatarUrl = if (vObj.has("userAvatarUrl") && !vObj.isNull("userAvatarUrl")) vObj.getString("userAvatarUrl") else null,
+                                    timeAgo = vObj.optString("timeAgo", "Recently")
+                                )
+                            )
+                        }
+                    }
+
+                    val likes = mutableListOf<StatusLiker>()
+                    if (obj.has("likes") && !obj.isNull("likes")) {
+                        val lArray = obj.getJSONArray("likes")
+                        for (j in 0 until lArray.length()) {
+                            val lObj = lArray.getJSONObject(j)
+                            likes.add(
+                                StatusLiker(
+                                    userId = lObj.getString("userId"),
+                                    userName = lObj.getString("userName"),
+                                    userAvatarUrl = if (lObj.has("userAvatarUrl") && !lObj.isNull("userAvatarUrl")) lObj.getString("userAvatarUrl") else null
+                                )
+                            )
+                        }
+                    }
+
                     val status = StatusItem(
                         id = obj.getString("id"),
                         userId = obj.getString("userId"),
@@ -939,7 +1190,9 @@ class FirebaseChatRepository(private val context: Context) {
                         photoUrl = if (obj.has("photoUrl") && !obj.isNull("photoUrl")) obj.getString("photoUrl") else null,
                         backgroundColorHex = obj.optString("backgroundColorHex", "#321C3B"),
                         timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
-                        isSeen = obj.optBoolean("isSeen", false)
+                        isSeen = obj.optBoolean("isSeen", false),
+                        viewers = viewers,
+                        likes = likes
                     )
                     if (!status.isExpired(_simulatedTimeOffsetMs.value)) {
                         loadedList.add(status)
@@ -1001,6 +1254,27 @@ class FirebaseChatRepository(private val context: Context) {
         try {
             val jsonArray = org.json.JSONArray()
             _statuses.value.forEach { status ->
+                val viewersArray = org.json.JSONArray()
+                status.viewers.forEach { v ->
+                    val vObj = org.json.JSONObject().apply {
+                        put("userId", v.userId)
+                        put("userName", v.userName)
+                        put("userAvatarUrl", v.userAvatarUrl)
+                        put("timeAgo", v.timeAgo)
+                    }
+                    viewersArray.put(vObj)
+                }
+
+                val likesArray = org.json.JSONArray()
+                status.likes.forEach { l ->
+                    val lObj = org.json.JSONObject().apply {
+                        put("userId", l.userId)
+                        put("userName", l.userName)
+                        put("userAvatarUrl", l.userAvatarUrl)
+                    }
+                    likesArray.put(lObj)
+                }
+
                 val obj = org.json.JSONObject().apply {
                     put("id", status.id)
                     put("userId", status.userId)
@@ -1011,6 +1285,8 @@ class FirebaseChatRepository(private val context: Context) {
                     put("backgroundColorHex", status.backgroundColorHex)
                     put("timestamp", status.timestamp)
                     put("isSeen", status.isSeen)
+                    put("viewers", viewersArray)
+                    put("likes", likesArray)
                 }
                 jsonArray.put(obj)
             }
@@ -1028,29 +1304,62 @@ class FirebaseChatRepository(private val context: Context) {
         photoUrl: String? = null,
         backgroundColorHex: String = "#321C3B"
     ) {
-        val sampleViewers: List<StatusViewer> = if (userId == "self") listOf(
-            StatusViewer("dr_rashed", "Dr. Rashed", null, "10m ago"),
-            StatusViewer("sk_farid", "Sk F A R I D", null, "25m ago"),
-            StatusViewer("safwan", "Safwan", null, "1h ago")
-        ) else emptyList()
+        val statusId = "status_${System.currentTimeMillis()}"
 
-        val sampleLikes: List<StatusLiker> = if (userId == "self") listOf(
-            StatusLiker("dr_rashed", "Dr. Rashed", null),
-            StatusLiker("safwan", "Safwan", null)
-        ) else emptyList()
+        // Persistent local copy for photo Url if it's a local uri/file
+        var persistentPhotoUrl = photoUrl
+        var localPhotoFile: File? = null
+
+        if (!photoUrl.isNullOrBlank() && (photoUrl.startsWith("content://") || (photoUrl.startsWith("file://") && !photoUrl.contains("status_photos")))) {
+            try {
+                val statusDir = File(context.filesDir, "status_photos").apply { mkdirs() }
+                val destFile = File(statusDir, "${statusId}.jpg")
+                val uri = Uri.parse(photoUrl)
+
+                val inputStream = context.contentResolver.openInputStream(uri)
+                if (inputStream != null) {
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeStream(context.contentResolver.openInputStream(uri), null, options)
+
+                    val maxDim = maxOf(options.outWidth, options.outHeight)
+                    var sampleSize = 1
+                    while (maxDim / sampleSize > 1080) { sampleSize *= 2 }
+
+                    val decodeOptions = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    val bitmap = BitmapFactory.decodeStream(inputStream, null, decodeOptions)
+                    inputStream.close()
+
+                    if (bitmap != null) {
+                        val outStream = FileOutputStream(destFile)
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outStream)
+                        outStream.flush()
+                        outStream.close()
+                        bitmap.recycle()
+
+                        localPhotoFile = destFile
+                        persistentPhotoUrl = Uri.fromFile(destFile).toString()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error storing local status image: ${e.localizedMessage}")
+            }
+        }
 
         val newStatus = StatusItem(
-            id = "status_${System.currentTimeMillis()}",
+            id = statusId,
             userId = userId,
             userName = userName,
             userAvatarUrl = userAvatarUrl,
             textContent = textContent,
-            photoUrl = photoUrl,
+            photoUrl = persistentPhotoUrl,
             backgroundColorHex = backgroundColorHex,
             timestamp = System.currentTimeMillis(),
-            isSeen = true, // own status is seen by self
-            viewers = sampleViewers,
-            likes = sampleLikes
+            isSeen = true,
+            viewers = emptyList(),
+            likes = emptyList()
         )
 
         val currentList = _statuses.value.toMutableList()
@@ -1058,15 +1367,62 @@ class FirebaseChatRepository(private val context: Context) {
         _statuses.value = currentList
         saveStatusesToPrefs()
 
-        // Sync status to Firestore
+        // Sync status map to Firestore
+        val statusMap = mapOf(
+            "id" to newStatus.id,
+            "userId" to newStatus.userId,
+            "userName" to newStatus.userName,
+            "userAvatarUrl" to newStatus.userAvatarUrl,
+            "textContent" to newStatus.textContent,
+            "photoUrl" to persistentPhotoUrl,
+            "isVideo" to newStatus.isVideo,
+            "backgroundColorHex" to newStatus.backgroundColorHex,
+            "timestamp" to newStatus.timestamp,
+            "viewers" to emptyList<Map<String, Any>>(),
+            "likes" to emptyList<Map<String, Any>>()
+        )
+
         try {
-            firestore?.collection("statuses")?.document(newStatus.id)?.set(newStatus)
+            firestore?.collection("statuses")?.document(newStatus.id)?.set(statusMap)
         } catch (e: Exception) {
             Log.w(TAG, "Firestore status sync skipped: ${e.localizedMessage}")
         }
+
+        // Upload to Firebase Storage in background coroutine if local file exists
+        val targetUploadFile = localPhotoFile ?: if (!persistentPhotoUrl.isNullOrBlank() && persistentPhotoUrl.startsWith("file://")) {
+            try { File(Uri.parse(persistentPhotoUrl).path ?: "") } catch (e: Exception) { null }
+        } else null
+
+        if (targetUploadFile != null && targetUploadFile.exists()) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val uploader = MediaCompressorAndUploader(context)
+                    val remotePath = "status_photos/${newStatus.id}.jpg"
+                    val downloadUrl = uploader.uploadToFirebaseStorage(targetUploadFile, remotePath) { _, _ -> }
+
+                    if (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
+                        val updatedList = _statuses.value.map { item ->
+                            if (item.id == newStatus.id) item.copy(photoUrl = downloadUrl) else item
+                        }
+                        _statuses.value = updatedList
+                        saveStatusesToPrefs()
+
+                        firestore?.collection("statuses")?.document(newStatus.id)
+                            ?.update("photoUrl", downloadUrl)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Status photo background upload error: ${e.localizedMessage}")
+                }
+            }
+        }
     }
 
-    fun toggleStatusLike(statusId: String, currentUserId: String = "self", currentUserName: String = "You", currentUserAvatar: String? = null) {
+    fun toggleStatusLike(
+        statusId: String,
+        currentUserId: String = "self",
+        currentUserName: String = "You",
+        currentUserAvatar: String? = null
+    ) {
         val updated = _statuses.value.map { status ->
             if (status.id == statusId) {
                 val existingLike = status.likes.firstOrNull { it.userId == currentUserId }
@@ -1075,6 +1431,21 @@ class FirebaseChatRepository(private val context: Context) {
                 } else {
                     status.likes + StatusLiker(currentUserId, currentUserName, currentUserAvatar)
                 }
+
+                try {
+                    val rawLikesMaps = newLikes.map { l ->
+                        mapOf(
+                            "userId" to l.userId,
+                            "userName" to l.userName,
+                            "userAvatarUrl" to l.userAvatarUrl
+                        )
+                    }
+                    firestore?.collection("statuses")?.document(statusId)
+                        ?.update("likes", rawLikesMaps)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Firestore status like update failed: ${e.localizedMessage}")
+                }
+
                 status.copy(likes = newLikes)
             } else {
                 status
@@ -1084,9 +1455,41 @@ class FirebaseChatRepository(private val context: Context) {
         saveStatusesToPrefs()
     }
 
-    fun markStatusAsSeen(statusId: String) {
+    fun markStatusAsSeen(
+        statusId: String,
+        currentUserId: String = "self",
+        currentUserName: String = "You",
+        currentUserAvatar: String? = null
+    ) {
         val updated = _statuses.value.map { status ->
-            if (status.id == statusId) status.copy(isSeen = true) else status
+            if (status.id == statusId) {
+                var newViewers = status.viewers
+                if (status.userId != currentUserId && status.userId != "self" && status.viewers.none { it.userId == currentUserId }) {
+                    val newViewer = StatusViewer(
+                        userId = currentUserId,
+                        userName = currentUserName,
+                        userAvatarUrl = currentUserAvatar,
+                        timeAgo = "Just now"
+                    )
+                    newViewers = status.viewers + newViewer
+
+                    try {
+                        val viewerMap = mapOf(
+                            "userId" to currentUserId,
+                            "userName" to currentUserName,
+                            "userAvatarUrl" to currentUserAvatar,
+                            "timeAgo" to "Just now"
+                        )
+                        firestore?.collection("statuses")?.document(statusId)
+                            ?.update("viewers", com.google.firebase.firestore.FieldValue.arrayUnion(viewerMap))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Firestore status viewer update failed: ${e.localizedMessage}")
+                    }
+                }
+                status.copy(isSeen = true, viewers = newViewers)
+            } else {
+                status
+            }
         }
         _statuses.value = updated
         saveStatusesToPrefs()
@@ -1100,7 +1503,7 @@ class FirebaseChatRepository(private val context: Context) {
             val firstItem = statusList.first()
             UserStatusGroup(
                 userId = uId,
-                userName = if (uId == currentUserId) "My Status" else firstItem.userName,
+                userName = if (uId == currentUserId || uId == "self") "My Status" else firstItem.userName,
                 userAvatarUrl = firstItem.userAvatarUrl,
                 statuses = statusList.sortedBy { it.timestamp }
             )
@@ -1109,8 +1512,8 @@ class FirebaseChatRepository(private val context: Context) {
         // Sort so "My Status" is first, then users with unseen status, then recent
         groups.sortWith { g1, g2 ->
             when {
-                g1.userId == currentUserId -> -1
-                g2.userId == currentUserId -> 1
+                g1.userId == currentUserId || g1.userId == "self" -> -1
+                g2.userId == currentUserId || g2.userId == "self" -> 1
                 g1.hasUnseen && !g2.hasUnseen -> -1
                 !g1.hasUnseen && g2.hasUnseen -> 1
                 else -> (g2.statuses.lastOrNull()?.timestamp ?: 0L).compareTo(g1.statuses.lastOrNull()?.timestamp ?: 0L)

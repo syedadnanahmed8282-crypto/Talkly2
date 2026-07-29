@@ -43,6 +43,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -295,20 +296,40 @@ fun PostStatusDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+                var isPosting by remember { mutableStateOf(false) }
+
                 // Share Button
                 Button(
                     onClick = {
-                        if (statusText.isNotBlank() || selectedMediaUri != null) {
-                            onPostStatus(
-                                statusText.ifBlank { null },
-                                selectedMediaUri,
-                                selectedColorHex
-                            )
-                            onDismiss()
+                        if ((statusText.isNotBlank() || selectedMediaUri != null) && !isPosting) {
+                            isPosting = true
+                            coroutineScope.launch {
+                                val currentUri = selectedMediaUri
+                                val finalPhotoUrl = if (currentUri != null && (currentUri.startsWith("content://") || currentUri.startsWith("file://"))) {
+                                    try {
+                                        val uri = Uri.parse(currentUri)
+                                        val compressor = com.family.talkly.util.MediaCompressorAndUploader(context)
+                                        val compressedFile = compressor.compressImage(uri) { _, _ -> }
+                                        compressor.uploadToFirebaseStorage(compressedFile, "status/media/${System.currentTimeMillis()}.jpg") { _, _ -> }
+                                    } catch (e: Exception) {
+                                        currentUri
+                                    }
+                                } else {
+                                    currentUri
+                                }
+                                onPostStatus(
+                                    statusText.ifBlank { null },
+                                    finalPhotoUrl,
+                                    selectedColorHex
+                                )
+                                onDismiss()
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
-                    enabled = statusText.isNotBlank() || selectedMediaUri != null,
+                    enabled = (statusText.isNotBlank() || selectedMediaUri != null) && !isPosting,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = SecondaryLightSage,
                         contentColor = PrimaryDarkPurple,
@@ -324,7 +345,7 @@ fun PostStatusDialog(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "স্টাটাস পোস্ট করুন (২৪ ঘণ্টা)",
+                        text = if (isPosting) "প্রসেস হচ্ছে..." else "স্টাটাস পোস্ট করুন (২৪ ঘণ্টা)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp
                     )

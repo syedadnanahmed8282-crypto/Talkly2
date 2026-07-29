@@ -195,7 +195,7 @@ fun ContactProfileDetailsDialog(
                     Box(
                         modifier = Modifier
                             .size(24.dp)
-                            .background(if (member.isOnline) Color(0xFF25D366) else Color.Gray, CircleShape)
+                            .background(if (member.isRecentlyActive()) Color(0xFF25D366) else Color.Gray, CircleShape)
                             .border(3.dp, Color.White, CircleShape)
                             .align(Alignment.BottomEnd)
                     )
@@ -475,7 +475,7 @@ fun ContactProfileDetailsDialog(
                         Box(
                             modifier = Modifier
                                 .size(10.dp)
-                                .background(if (member.isOnline) Color(0xFF25D366) else Color.Gray, CircleShape)
+                                .background(if (member.isRecentlyActive()) Color(0xFF25D366) else Color.Gray, CircleShape)
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
@@ -486,10 +486,10 @@ fun ContactProfileDetailsDialog(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = if (member.isOnline) "Online • Available now" else "Last seen: ${member.lastSeen}",
+                                text = if (member.isRecentlyActive()) "Online" else "Last seen ${member.lastSeen}",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Medium,
-                                color = if (member.isOnline) Color(0xFF25D366) else Color.DarkGray
+                                color = if (member.isRecentlyActive()) Color(0xFF25D366) else Color.DarkGray
                             )
                         }
                     }

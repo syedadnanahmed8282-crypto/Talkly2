@@ -332,6 +332,7 @@ fun ChatListScreen(
         StatusViewerDialog(
             statusGroups = statusGroups,
             initialGroupIndex = activeViewerGroupIndex!!,
+            currentUserId = currentUserProfile?.uid ?: "self",
             onDismiss = { activeViewerGroupIndex = null },
             onMarkStatusSeen = { statusId -> onMarkStatusSeen?.invoke(statusId) },
             onAddStatusClick = { showPostStatusDialog = true },
@@ -921,7 +922,7 @@ fun ChatListScreen(
                                                     )
                                                 }
                                                 // Online dot badge if not blocked
-                                                if (member.isOnline && !isUserBlocked) {
+                                                if (member.isRecentlyActive() && !isUserBlocked) {
                                                     Box(
                                                         modifier = Modifier
                                                             .size(12.dp)
@@ -1220,7 +1221,7 @@ private fun FamilyChatRow(
                 }
             }
             // Online Status Checkmark / Dot Indicator
-            if (member.isOnline) {
+            if (member.isRecentlyActive()) {
                 Box(
                     modifier = Modifier
                         .size(16.dp)
