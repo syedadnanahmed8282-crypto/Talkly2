@@ -42,6 +42,7 @@ import com.family.talkly.ui.theme.ExpiredTextDark
 @Composable
 fun MediaMessageItem(
     message: ChatMessage,
+    isSelf: Boolean = false,
     simulatedTimeOffsetMs: Long,
     onMediaClick: (String) -> Unit
 ) {
@@ -95,7 +96,7 @@ fun MediaMessageItem(
             }
         }
     } else if (message.messageType == MessageType.VOICE_NOTE) {
-        AudioPlayerItem(message = message)
+        AudioPlayerItem(message = message, isSelf = isSelf)
     } else {
         // Active Media Display
         Box(

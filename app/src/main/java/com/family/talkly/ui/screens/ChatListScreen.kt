@@ -362,8 +362,11 @@ fun ChatListScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             if (currentUserProfile?.profilePicUrl?.isNotBlank() == true) {
+                                val mediaModel = remember(currentUserProfile.profilePicUrl) {
+                                    com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentUserProfile.profilePicUrl)
+                                }
                                 AsyncImage(
-                                    model = currentUserProfile.profilePicUrl,
+                                    model = mediaModel,
                                     contentDescription = "My Profile",
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
@@ -574,8 +577,11 @@ fun ChatListScreen(
                                             contentAlignment = Alignment.Center
                                         ) {
                                             if (currentUserProfile?.profilePicUrl?.isNotBlank() == true) {
+                                                val mediaModel = remember(currentUserProfile.profilePicUrl) {
+                                                    com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentUserProfile.profilePicUrl)
+                                                }
                                                 AsyncImage(
-                                                    model = currentUserProfile.profilePicUrl,
+                                                    model = mediaModel,
                                                     contentDescription = "My Status",
                                                     contentScale = ContentScale.Crop,
                                                     modifier = Modifier.fillMaxSize()
@@ -656,8 +662,11 @@ fun ChatListScreen(
                                             contentAlignment = Alignment.Center
                                         ) {
                                             if (group.userAvatarUrl != null || member?.avatarUrl != null) {
+                                                val mediaModel = remember(group.userAvatarUrl, member?.avatarUrl) {
+                                                    com.family.talkly.util.PhoneUtils.getCoilMediaModel(group.userAvatarUrl ?: member?.avatarUrl)
+                                                }
                                                 AsyncImage(
-                                                    model = group.userAvatarUrl ?: member?.avatarUrl,
+                                                    model = mediaModel,
                                                     contentDescription = group.userName,
                                                     contentScale = ContentScale.Crop,
                                                     modifier = Modifier.fillMaxSize()
@@ -907,8 +916,11 @@ fun ChatListScreen(
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 if (member.avatarUrl?.isNotBlank() == true) {
+                                                    val mediaModel = remember(member.avatarUrl) {
+                                                        com.family.talkly.util.PhoneUtils.getCoilMediaModel(member.avatarUrl)
+                                                    }
                                                     AsyncImage(
-                                                        model = member.avatarUrl,
+                                                        model = mediaModel,
                                                         contentDescription = member.name,
                                                         contentScale = ContentScale.Crop,
                                                         modifier = Modifier.fillMaxSize()
@@ -1118,8 +1130,11 @@ private fun FamilyMemberAvatarStory(
                 contentAlignment = Alignment.Center
             ) {
                 if (member.avatarUrl != null) {
+                    val mediaModel = remember(member.avatarUrl) {
+                        com.family.talkly.util.PhoneUtils.getCoilMediaModel(member.avatarUrl)
+                    }
                     AsyncImage(
-                        model = member.avatarUrl,
+                        model = mediaModel,
                         contentDescription = member.name,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
@@ -1205,8 +1220,11 @@ private fun FamilyChatRow(
                 contentAlignment = Alignment.Center
             ) {
                 if (member.avatarUrl != null) {
+                    val mediaModel = remember(member.avatarUrl) {
+                        com.family.talkly.util.PhoneUtils.getCoilMediaModel(member.avatarUrl)
+                    }
                     AsyncImage(
-                        model = member.avatarUrl,
+                        model = mediaModel,
                         contentDescription = member.name,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()

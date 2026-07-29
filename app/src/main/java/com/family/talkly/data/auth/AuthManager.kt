@@ -403,7 +403,7 @@ class AuthManager(private val context: Context) {
 
                         // Local stored picture fallback check
                         val localStoredPic = prefs.getString(KEY_PROFILE_PIC, "") ?: ""
-                        val finalPic = if (docPic.startsWith("http://") || docPic.startsWith("https://")) {
+                        val finalPic = if (docPic.startsWith("http://") || docPic.startsWith("https://") || docPic.startsWith("data:")) {
                             docPic
                         } else if (localStoredPic.isNotBlank() && !localStoredPic.startsWith("content://")) {
                             localStoredPic
@@ -510,6 +510,16 @@ class AuthManager(private val context: Context) {
             }
         }
 
+        // Prepare universally viewable URL/data string for Firestore remote users
+        var firestorePicUrl = persistentLocalPicUrl
+        val targetUploadFile = localImageFile ?: if (persistentLocalPicUrl.startsWith("file://")) {
+            try { File(Uri.parse(persistentLocalPicUrl).path ?: "") } catch (e: Exception) { null }
+        } else null
+
+        if (targetUploadFile != null && targetUploadFile.exists()) {
+            firestorePicUrl = MediaCompressorAndUploader(context).encodeFileToBase64(targetUploadFile)
+        }
+
         // Save local session immediately with persistent local file or HTTP URL
         saveLocalSession(uid, name, phone, persistentLocalPicUrl, bio)
         val profile = UserProfile(
@@ -523,14 +533,14 @@ class AuthManager(private val context: Context) {
         _authState.value = AuthState.Authenticated(profile)
         onSuccess()
 
-        // Write initial document to Firestore
+        // Write document to Firestore using universally accessible firestorePicUrl
         val profileMap = mutableMapOf<String, Any>(
             "uid" to uid,
             "name" to name,
             "phoneNumber" to phone,
             "phoneSuffix" to phoneSuffix,
             "email" to getInternalEmail(phone),
-            "profilePicUrl" to persistentLocalPicUrl,
+            "profilePicUrl" to firestorePicUrl,
             "bio" to bio,
             "updatedAt" to System.currentTimeMillis()
         )
@@ -549,10 +559,6 @@ class AuthManager(private val context: Context) {
         }
 
         // Upload to Firebase Storage in background coroutine so other users receive HTTP URL
-        val targetUploadFile = localImageFile ?: if (persistentLocalPicUrl.startsWith("file://")) {
-            try { File(Uri.parse(persistentLocalPicUrl).path ?: "") } catch (e: Exception) { null }
-        } else null
-
         if (targetUploadFile != null && targetUploadFile.exists()) {
             CoroutineScope(Dispatchers.IO).launch {
                 try {
@@ -560,8 +566,8 @@ class AuthManager(private val context: Context) {
                     val remotePath = "profile_pictures/${uid}.jpg"
                     val downloadUrl = uploader.uploadToFirebaseStorage(targetUploadFile, remotePath) { _, _ -> }
 
-                    if (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
-                        Log.d(TAG, "Uploaded profile picture to Firebase Storage: $downloadUrl")
+                    if (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://") || downloadUrl.startsWith("data:")) {
+                        Log.d(TAG, "Uploaded profile picture to Firebase Storage / Encoded: $downloadUrl")
                         // Update local session
                         saveLocalSession(uid, name, phone, downloadUrl, bio)
                         val updatedProfile = profile.copy(profilePicUrl = downloadUrl)
@@ -571,7 +577,7 @@ class AuthManager(private val context: Context) {
                         getFirestore().collection("users").document(uid)
                             .update("profilePicUrl", downloadUrl)
                             .addOnSuccessListener {
-                                Log.d(TAG, "Updated Firestore profilePicUrl to Firebase Storage download URL")
+                                Log.d(TAG, "Updated Firestore profilePicUrl to Firebase Storage URL")
                             }
                     }
                 } catch (e: Exception) {

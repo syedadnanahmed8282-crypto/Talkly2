@@ -1348,9 +1348,10 @@ class FirebaseChatRepository(private val context: Context) {
             }
         }
 
+        val resolvedUserId = if (userId != "self") userId else (currentSyncedUserId ?: "self")
         val newStatus = StatusItem(
             id = statusId,
-            userId = userId,
+            userId = resolvedUserId,
             userName = userName,
             userAvatarUrl = userAvatarUrl,
             textContent = textContent,
@@ -1461,12 +1462,14 @@ class FirebaseChatRepository(private val context: Context) {
         currentUserName: String = "You",
         currentUserAvatar: String? = null
     ) {
+        val realCurrentUid = if (currentUserId != "self") currentUserId else (currentSyncedUserId ?: "self")
         val updated = _statuses.value.map { status ->
             if (status.id == statusId) {
                 var newViewers = status.viewers
-                if (status.userId != currentUserId && status.userId != "self" && status.viewers.none { it.userId == currentUserId }) {
+                val isSelfStatus = status.userId == "self" || status.userId == realCurrentUid || (currentSyncedUserId != null && status.userId == currentSyncedUserId)
+                if (!isSelfStatus && status.viewers.none { it.userId == realCurrentUid || it.userId == "self" }) {
                     val newViewer = StatusViewer(
-                        userId = currentUserId,
+                        userId = realCurrentUid,
                         userName = currentUserName,
                         userAvatarUrl = currentUserAvatar,
                         timeAgo = "Just now"
@@ -1475,7 +1478,7 @@ class FirebaseChatRepository(private val context: Context) {
 
                     try {
                         val viewerMap = mapOf(
-                            "userId" to currentUserId,
+                            "userId" to realCurrentUid,
                             "userName" to currentUserName,
                             "userAvatarUrl" to currentUserAvatar,
                             "timeAgo" to "Just now"
@@ -1499,21 +1502,26 @@ class FirebaseChatRepository(private val context: Context) {
         val activeStatuses = _statuses.value.filter { !it.isExpired(_simulatedTimeOffsetMs.value) }
         val groupedMap = activeStatuses.groupBy { it.userId }
 
+        val realCurrentUid = if (currentUserId != "self") currentUserId else (currentSyncedUserId ?: "self")
+
         val groups = groupedMap.map { (uId, statusList) ->
             val firstItem = statusList.first()
+            val isSelfGroup = uId == "self" || uId == realCurrentUid || (currentSyncedUserId != null && uId == currentSyncedUserId)
             UserStatusGroup(
                 userId = uId,
-                userName = if (uId == currentUserId || uId == "self") "My Status" else firstItem.userName,
+                userName = if (isSelfGroup) "My Status" else firstItem.userName,
                 userAvatarUrl = firstItem.userAvatarUrl,
                 statuses = statusList.sortedBy { it.timestamp }
             )
         }.toMutableList()
 
-        // Sort so "My Status" is first, then users with unseen status, then recent
+        // Sort so "My Status" is always first, then users with unseen status, then recent
         groups.sortWith { g1, g2 ->
+            val isG1Self = g1.userId == "self" || g1.userId == realCurrentUid || (currentSyncedUserId != null && g1.userId == currentSyncedUserId)
+            val isG2Self = g2.userId == "self" || g2.userId == realCurrentUid || (currentSyncedUserId != null && g2.userId == currentSyncedUserId)
             when {
-                g1.userId == currentUserId || g1.userId == "self" -> -1
-                g2.userId == currentUserId || g2.userId == "self" -> 1
+                isG1Self && !isG2Self -> -1
+                !isG1Self && isG2Self -> 1
                 g1.hasUnseen && !g2.hasUnseen -> -1
                 !g1.hasUnseen && g2.hasUnseen -> 1
                 else -> (g2.statuses.lastOrNull()?.timestamp ?: 0L).compareTo(g1.statuses.lastOrNull()?.timestamp ?: 0L)

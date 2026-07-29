@@ -77,8 +77,11 @@ fun ContactProfileDetailsDialog(
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     if (member.avatarUrl != null) {
+                        val mediaModel = remember(member.avatarUrl) {
+                            com.family.talkly.util.PhoneUtils.getCoilMediaModel(member.avatarUrl)
+                        }
                         AsyncImage(
-                            model = member.avatarUrl,
+                            model = mediaModel,
                             contentDescription = member.name,
                             contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize()
@@ -175,8 +178,11 @@ fun ContactProfileDetailsDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         if (member.avatarUrl != null) {
+                            val mediaModel = remember(member.avatarUrl) {
+                                com.family.talkly.util.PhoneUtils.getCoilMediaModel(member.avatarUrl)
+                            }
                             AsyncImage(
-                                model = member.avatarUrl,
+                                model = mediaModel,
                                 contentDescription = member.name,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()

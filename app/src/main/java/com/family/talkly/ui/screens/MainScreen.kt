@@ -75,8 +75,9 @@ fun MainScreen(
     val simulatedTimeOffsetMs by chatRepository.simulatedTimeOffsetMs.collectAsState()
     val messagesMap by chatRepository.messagesMap.collectAsState()
 
+    val currentUid = currentUserProfile?.uid?.ifBlank { "self" } ?: "self"
     val statusGroups = remember(statuses, familyMembers, simulatedTimeOffsetMs, currentUserProfile) {
-        chatRepository.getGroupedActiveStatuses("self")
+        chatRepository.getGroupedActiveStatuses(currentUid)
     }
 
     val callInfo by zegoManager.callState.collectAsState()

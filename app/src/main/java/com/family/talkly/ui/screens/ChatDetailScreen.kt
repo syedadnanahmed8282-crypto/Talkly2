@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
 import androidx.compose.foundation.layout.padding
@@ -779,15 +780,28 @@ fun ChatDetailScreen(
                             Box(
                                 modifier = Modifier
                                     .size(38.dp)
+                                    .clip(CircleShape)
                                     .background(Color.White.copy(alpha = 0.2f), CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = member.name.take(2).uppercase(),
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp
-                                )
+                                if (!member.avatarUrl.isNullOrBlank()) {
+                                    val mediaModel = remember(member.avatarUrl) {
+                                        com.family.talkly.util.PhoneUtils.getCoilMediaModel(member.avatarUrl)
+                                    }
+                                    AsyncImage(
+                                        model = mediaModel,
+                                        contentDescription = member.name,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Text(
+                                        text = member.name.take(2).uppercase(),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 16.sp
+                                    )
+                                }
                             }
                             Spacer(modifier = Modifier.width(10.dp))
                             Column {
@@ -1151,7 +1165,7 @@ fun ChatDetailScreen(
                                 (member.phone.isNotBlank() && msg.senderId == member.phone) ||
                                 (memberSuffix.isNotBlank() && memberSuffix == senderSuffix)
 
-                        val isSelf = msg.senderId == "self" || msg.senderName == "You" || !isMemberSender
+                        val isSelf = !isMemberSender
                         var offsetX by remember { mutableFloatStateOf(0f) }
                         var showReadDetails by remember { mutableStateOf(false) }
 
@@ -1276,6 +1290,7 @@ fun ChatDetailScreen(
                                             if (msg.mediaUrl != null || msg.isMediaExpired(simulatedTimeOffsetMs)) {
                                                 MediaMessageItem(
                                                     message = msg,
+                                                    isSelf = isSelf,
                                                     simulatedTimeOffsetMs = simulatedTimeOffsetMs,
                                                     onMediaClick = {
                                                         if (!msg.isMediaExpired(simulatedTimeOffsetMs)) {

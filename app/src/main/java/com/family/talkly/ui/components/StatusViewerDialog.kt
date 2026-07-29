@@ -96,6 +96,13 @@ fun StatusViewerDialog(
     var statusIndex by remember { mutableIntStateOf(0) }
     val currentStatus = currentGroup.statuses.getOrNull(statusIndex) ?: currentGroup.statuses.first()
 
+    val isOwnStatus = remember(currentGroup.userId, currentStatus.userId, currentUserId) {
+        currentGroup.userId == "self" ||
+        currentGroup.userId == currentUserId ||
+        currentStatus.userId == "self" ||
+        currentStatus.userId == currentUserId
+    }
+
     var progress by remember(groupIndex, statusIndex) { mutableFloatStateOf(0f) }
     var isPaused by remember { mutableStateOf(false) }
 
@@ -192,8 +199,11 @@ fun StatusViewerDialog(
         ) {
             // Background Photo Status
             if (currentStatus.photoUrl != null) {
+                val mediaModel = remember(currentStatus.photoUrl) {
+                    com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentStatus.photoUrl)
+                }
                 AsyncImage(
-                    model = com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentStatus.photoUrl),
+                    model = mediaModel,
                     contentDescription = "Status image",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -341,7 +351,7 @@ fun StatusViewerDialog(
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (currentGroup.userId == "self" && onAddStatusClick != null) {
+                        if (isOwnStatus && onAddStatusClick != null) {
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(20.dp))
@@ -393,7 +403,7 @@ fun StatusViewerDialog(
                     .align(Alignment.BottomCenter)
                     .padding(horizontal = 16.dp, vertical = 20.dp)
             ) {
-                if (currentGroup.userId == "self") {
+                if (isOwnStatus) {
                     // Own Status: Viewers & Loves Count Pill Button
                     Box(
                         modifier = Modifier

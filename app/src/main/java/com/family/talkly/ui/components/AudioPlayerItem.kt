@@ -57,6 +57,7 @@ import java.util.Locale
 @Composable
 fun AudioPlayerItem(
     message: ChatMessage,
+    isSelf: Boolean = message.senderId == "self",
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -117,7 +118,6 @@ fun AudioPlayerItem(
 
     val progress = if (durationMs > 0) (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
 
-    val isSelf = message.senderId == "self"
     val isDarkTheme = LocalIsDarkTheme.current
 
     val containerColor = if (isDarkTheme) {

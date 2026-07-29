@@ -245,8 +245,11 @@ fun UserProfileDetailsDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         if (currentPhotoUrl.isNotBlank()) {
+                            val mediaModel = remember(currentPhotoUrl) {
+                                com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentPhotoUrl)
+                            }
                             AsyncImage(
-                                model = currentPhotoUrl,
+                                model = mediaModel,
                                 contentDescription = "My Profile Picture",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
