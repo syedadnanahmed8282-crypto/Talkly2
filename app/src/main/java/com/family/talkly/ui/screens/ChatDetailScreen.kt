@@ -66,8 +66,11 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
@@ -164,6 +167,9 @@ fun ChatDetailScreen(
         replyToText: String?
     ) -> Unit,
     onToggleReaction: (messageId: String, reactionEmoji: String) -> Unit = { _, _ -> },
+    onEditMessage: (messageId: String, newText: String) -> Unit = { _, _ -> },
+    onDeleteMessageForYou: (messageId: String) -> Unit = {},
+    onDeleteMessageForEveryone: (messageId: String) -> Unit = {},
     onToggleStarMessage: (messageId: String) -> Unit = {},
     onTogglePinMessage: (messageId: String) -> Unit = {},
     onTogglePinMember: () -> Unit = {},
@@ -181,6 +187,7 @@ fun ChatDetailScreen(
     var fullMediaViewerMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var reactionDialogMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var replyingToMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var showContactProfile by remember { mutableStateOf(false) }
     
     var isSearchActive by remember { mutableStateOf(false) }
@@ -425,6 +432,7 @@ fun ChatDetailScreen(
                                     .weight(1f)
                                     .clickable {
                                         replyingToMessage = selectedMsg
+                                        editingMessage = null
                                         reactionDialogMessage = null
                                     }
                             ) {
@@ -514,6 +522,123 @@ fun ChatDetailScreen(
                                         color = WhatsappTeal,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        val isSelfMsg = selectedMsg.senderId == "self" || selectedMsg.senderName == "You"
+                        val nowMs = System.currentTimeMillis()
+                        val isWithin10Mins = (nowMs - selectedMsg.timestamp) <= (10 * 60 * 1000L)
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFFFFEBEE),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        onDeleteMessageForYou(selectedMsg.id)
+                                        reactionDialogMessage = null
+                                        Toast.makeText(context, "Deleted for you", Toast.LENGTH_SHORT).show()
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Delete for you",
+                                        tint = Color(0xFFD32F2F),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Delete for you",
+                                        color = Color(0xFFD32F2F),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSelfMsg && isWithin10Mins) Color(0xFFFFF3E0) else Color(0xFFF5F5F5),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        if (!isSelfMsg) {
+                                            Toast.makeText(context, "Can only delete your own messages for everyone", Toast.LENGTH_SHORT).show()
+                                        } else if (!isWithin10Mins) {
+                                            Toast.makeText(context, "Cannot delete for everyone after 10 minutes", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            onDeleteMessageForEveryone(selectedMsg.id)
+                                            reactionDialogMessage = null
+                                            Toast.makeText(context, "Deleted for everyone", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteForever,
+                                        contentDescription = "Delete for everyone",
+                                        tint = if (isSelfMsg && isWithin10Mins) Color(0xFFE65100) else Color.Gray,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Delete everyone",
+                                        color = if (isSelfMsg && isWithin10Mins) Color(0xFFE65100) else Color.Gray,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSelfMsg && isWithin10Mins && selectedMsg.messageType == MessageType.TEXT) Color(0xFFE3F2FD) else Color(0xFFF5F5F5),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        if (!isSelfMsg) {
+                                            Toast.makeText(context, "Can only edit your own messages", Toast.LENGTH_SHORT).show()
+                                        } else if (!isWithin10Mins) {
+                                            Toast.makeText(context, "Cannot edit after 10 minutes", Toast.LENGTH_SHORT).show()
+                                        } else if (selectedMsg.messageType != MessageType.TEXT) {
+                                            Toast.makeText(context, "Only text messages can be edited", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            editingMessage = selectedMsg
+                                            textInput = selectedMsg.textContent
+                                            replyingToMessage = null
+                                            reactionDialogMessage = null
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Edit",
+                                        tint = if (isSelfMsg && isWithin10Mins && selectedMsg.messageType == MessageType.TEXT) Color(0xFF1976D2) else Color.Gray,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Edit",
+                                        color = if (isSelfMsg && isWithin10Mins && selectedMsg.messageType == MessageType.TEXT) Color(0xFF1976D2) else Color.Gray,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
                                     )
                                 }
                             }
@@ -773,9 +898,18 @@ fun ChatDetailScreen(
             } else {
                 TopAppBar(
                     title = {
+                        val displayName = member.name.ifBlank { member.firstName }
+                        val autoFontSize = when {
+                            displayName.length > 22 -> 12.sp
+                            displayName.length > 16 -> 14.sp
+                            else -> 16.sp
+                        }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable { showContactProfile = true }
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { showContactProfile = true }
+                                .padding(vertical = 4.dp, horizontal = 4.dp)
                         ) {
                             Box(
                                 modifier = Modifier
@@ -804,13 +938,16 @@ fun ChatDetailScreen(
                                 }
                             }
                             Spacer(modifier = Modifier.width(10.dp))
-                            Column {
+                            Column(modifier = Modifier.weight(1f, fill = false)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = member.firstName,
+                                        text = displayName,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp,
-                                        color = Color.White
+                                        fontSize = autoFontSize,
+                                        color = Color.White,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     if (isMuted) {
                                         Spacer(modifier = Modifier.width(4.dp))
@@ -827,13 +964,16 @@ fun ChatDetailScreen(
                                     isBlocked -> "Blocked"
                                     member.isTyping -> "typing..."
                                     member.isRecentlyActive() -> "Online"
-                                    else -> "Last seen ${member.lastSeen}"
+                                    else -> "Last seen ${member.getFormattedLastSeen()}"
                                 }
                                 Text(
                                     text = statusSubtext,
                                     fontSize = 11.sp,
                                     fontWeight = if (member.isTyping && !isBlocked) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (!member.isRegisteredOnTalkly || isBlocked) Color(0xFFFFCDD2) else if (member.isTyping) Color(0xFF25D366) else Color.White.copy(alpha = 0.8f)
+                                    color = if (!member.isRegisteredOnTalkly || isBlocked) Color(0xFFFFCDD2) else if (member.isTyping) Color(0xFF25D366) else Color.White.copy(alpha = 0.8f),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -1337,6 +1477,14 @@ fun ChatDetailScreen(
                                                     )
                                                     Spacer(modifier = Modifier.width(3.dp))
                                                 }
+                                                if (msg.isEdited) {
+                                                    Text(
+                                                        text = "Edited ",
+                                                        fontSize = 10.sp,
+                                                        fontStyle = FontStyle.Italic,
+                                                        color = subTextColor
+                                                    )
+                                                }
                                                 Text(
                                                     text = msg.formattedTime,
                                                     fontSize = 10.sp,
@@ -1563,6 +1711,73 @@ fun ChatDetailScreen(
                 }
             }
 
+            // Editing Banner Bar directly above input field
+            AnimatedVisibility(
+                visible = editingMessage != null,
+                enter = slideInVertically() + fadeIn(),
+                exit = slideOutVertically() + fadeOut()
+            ) {
+                editingMessage?.let { editMsg ->
+                    Surface(
+                        color = Color(0xFFE3F2FD),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(0.5.dp, Color(0xFF90CAF9))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(4.dp)
+                                        .height(36.dp)
+                                        .background(Color(0xFF1976D2), RoundedCornerShape(2.dp))
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "Editing message",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF1976D2)
+                                    )
+                                    Text(
+                                        text = editMsg.textContent,
+                                        fontSize = 12.sp,
+                                        color = Color.DarkGray,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    editingMessage = null
+                                    textInput = ""
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Cancel edit",
+                                    tint = Color.Gray,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Bottom Input Bar or Blocked/Unregistered Contact Banner
             if (!member.isRegisteredOnTalkly) {
                 Surface(
@@ -1747,14 +1962,33 @@ fun ChatDetailScreen(
                             keyboardActions = KeyboardActions(
                                 onSend = {
                                     if (textInput.isNotBlank()) {
-                                        onSendMessage(
-                                            textInput, MessageType.TEXT, null,
-                                            replyingToMessage?.id,
-                                            replyingToMessage?.senderName,
-                                            replyingToMessage?.textContent?.ifEmpty { "Media" }
-                                        )
-                                        textInput = ""
-                                        replyingToMessage = null
+                                        if (editingMessage != null) {
+                                            onEditMessage(editingMessage!!.id, textInput.trim())
+                                            textInput = ""
+                                            editingMessage = null
+                                        } else {
+                                            val replyToTextResolved = replyingToMessage?.let { rMsg ->
+                                                when {
+                                                    rMsg.textContent.isNotBlank() -> rMsg.textContent
+                                                    rMsg.messageType == MessageType.IMAGE -> "📷 Photo"
+                                                    rMsg.messageType == MessageType.VIDEO -> "🎥 Video"
+                                                    rMsg.messageType == MessageType.VOICE_NOTE -> "🎤 Voice Note"
+                                                    rMsg.messageType == MessageType.CALL_LOG -> "📞 Call Log"
+                                                    else -> "Media message"
+                                                }
+                                            }
+                                            val replyToSenderNameResolved = replyingToMessage?.senderName?.ifBlank { null }
+                                                ?: member.name.ifBlank { member.firstName }
+
+                                            onSendMessage(
+                                                textInput, MessageType.TEXT, null,
+                                                replyingToMessage?.id,
+                                                replyToSenderNameResolved,
+                                                replyToTextResolved
+                                            )
+                                            textInput = ""
+                                            replyingToMessage = null
+                                        }
                                         onTypingStateChanged(false)
                                     }
                                 }
@@ -1787,14 +2021,33 @@ fun ChatDetailScreen(
                         FloatingActionButton(
                             onClick = {
                                 if (textInput.isNotBlank()) {
-                                    onSendMessage(
-                                        textInput, MessageType.TEXT, null,
-                                        replyingToMessage?.id,
-                                        replyingToMessage?.senderName,
-                                        replyingToMessage?.textContent?.ifEmpty { "Media" }
-                                    )
-                                    textInput = ""
-                                    replyingToMessage = null
+                                    if (editingMessage != null) {
+                                        onEditMessage(editingMessage!!.id, textInput.trim())
+                                        textInput = ""
+                                        editingMessage = null
+                                    } else {
+                                        val replyToTextResolved = replyingToMessage?.let { rMsg ->
+                                            when {
+                                                rMsg.textContent.isNotBlank() -> rMsg.textContent
+                                                rMsg.messageType == MessageType.IMAGE -> "📷 Photo"
+                                                rMsg.messageType == MessageType.VIDEO -> "🎥 Video"
+                                                rMsg.messageType == MessageType.VOICE_NOTE -> "🎤 Voice Note"
+                                                rMsg.messageType == MessageType.CALL_LOG -> "📞 Call Log"
+                                                else -> "Media message"
+                                            }
+                                        }
+                                        val replyToSenderNameResolved = replyingToMessage?.senderName?.ifBlank { null }
+                                            ?: member.name.ifBlank { member.firstName }
+
+                                        onSendMessage(
+                                            textInput, MessageType.TEXT, null,
+                                            replyingToMessage?.id,
+                                            replyToSenderNameResolved,
+                                            replyToTextResolved
+                                        )
+                                        textInput = ""
+                                        replyingToMessage = null
+                                    }
                                     onTypingStateChanged(false)
                                 } else {
                                     startVoiceRecording()

@@ -209,11 +209,20 @@ fun ContactProfileDetailsDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                val displayName = member.name
+                val nameFontSize = when {
+                    displayName.length > 25 -> 15.sp
+                    displayName.length > 18 -> 18.sp
+                    else -> 22.sp
+                }
                 Text(
-                    text = member.name,
+                    text = displayName,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 22.sp,
-                    color = Color(0xFF111B21)
+                    fontSize = nameFontSize,
+                    color = Color(0xFF111B21),
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
 
                 Spacer(modifier = Modifier.height(4.dp))
@@ -492,7 +501,7 @@ fun ContactProfileDetailsDialog(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = if (member.isRecentlyActive()) "Online" else "Last seen ${member.lastSeen}",
+                                text = if (member.isRecentlyActive()) "Online" else "Last seen ${member.getFormattedLastSeen()}",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = if (member.isRecentlyActive()) Color(0xFF25D366) else Color.DarkGray

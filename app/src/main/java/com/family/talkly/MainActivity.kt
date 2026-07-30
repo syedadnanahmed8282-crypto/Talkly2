@@ -145,6 +145,8 @@ class MainActivity : ComponentActivity() {
                                     themePreferences.setThemeMode(mode)
                                 },
                                 onLogout = {
+                                    chatRepository.resetLocalState()
+                                    zegoManager.endCall()
                                     authManager.logout()
                                 },
                                 onSaveProfile = { name, bio, picUrl ->

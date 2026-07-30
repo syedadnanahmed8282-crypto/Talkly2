@@ -63,28 +63,19 @@ fun FullMediaViewerDialog(
             Box(modifier = Modifier.fillMaxSize()) {
                 // Media Content
                 if (message.mediaUrl != null) {
-                    AsyncImage(
-                        model = com.family.talkly.util.PhoneUtils.getCoilMediaModel(message.mediaUrl),
-                        contentDescription = "Full Media",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
-
                     if (isVideo) {
-                        Box(
-                            modifier = Modifier
-                                .size(72.dp)
-                                .background(Color.Black.copy(alpha = 0.6f), CircleShape)
-                                .align(Alignment.Center),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Play Video",
-                                tint = Color.White,
-                                modifier = Modifier.size(48.dp)
-                            )
-                        }
+                        TalklyVideoPlayer(
+                            videoUrl = message.mediaUrl,
+                            modifier = Modifier.fillMaxSize(),
+                            autoPlay = true
+                        )
+                    } else {
+                        AsyncImage(
+                            model = com.family.talkly.util.PhoneUtils.getCoilMediaModel(message.mediaUrl),
+                            contentDescription = "Full Media",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
                     }
                 }
 

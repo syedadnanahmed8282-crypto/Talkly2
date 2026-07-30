@@ -348,11 +348,20 @@ fun UserProfileDetailsDialog(
                                 singleLine = true
                             )
                         } else {
+                            val displayName = editedName.ifBlank { "No Name Set" }
+                            val autoFontSize = when {
+                                displayName.length > 25 -> 12.sp
+                                displayName.length > 18 -> 14.sp
+                                else -> 16.sp
+                            }
                             Text(
-                                text = editedName.ifBlank { "No Name Set" },
-                                fontSize = 16.sp,
+                                text = displayName,
+                                fontSize = autoFontSize,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFF111B21),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 modifier = Modifier.padding(top = 4.dp, start = 28.dp)
                             )
                         }

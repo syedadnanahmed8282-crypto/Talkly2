@@ -714,7 +714,11 @@ fun ChatListScreen(
                         familyMembers.sortedWith(
                             compareByDescending<FamilyMember> { it.isPinned }
                                 .thenByDescending { member ->
-                                    messagesMap[member.id]?.lastOrNull()?.timestamp ?: 0L
+                                    val msgs = messagesMap[member.id]
+                                        ?: (if (!member.firebaseUid.isNullOrBlank()) messagesMap[member.firebaseUid] else null)
+                                        ?: (if (member.phone.isNotBlank()) messagesMap[member.phone] else null)
+                                        ?: emptyList()
+                                    msgs.lastOrNull()?.timestamp ?: 0L
                                 }
                         )
                     }
@@ -748,7 +752,10 @@ fun ChatListScreen(
                             contentPadding = PaddingValues(vertical = 2.dp)
                         ) {
                             items(sortedMembers) { member ->
-                                val memberMessages = messagesMap[member.id] ?: emptyList()
+                                val memberMessages = messagesMap[member.id]
+                                    ?: (if (!member.firebaseUid.isNullOrBlank()) messagesMap[member.firebaseUid] else null)
+                                    ?: (if (member.phone.isNotBlank()) messagesMap[member.phone] else null)
+                                    ?: emptyList()
                                 val lastMessage = memberMessages.lastOrNull()
 
                                 FamilyChatRow(
@@ -1294,7 +1301,7 @@ private fun FamilyChatRow(
                     )
                 }
                 Spacer(modifier = Modifier.width(8.dp))
-                val displayTime = if (lastMessage != null) lastMessage.formattedTime else member.lastSeen
+                val displayTime = if (lastMessage != null) lastMessage.formattedTime else member.getFormattedLastSeen()
                 Text(
                     text = if (member.isTyping) "typing..." else displayTime,
                     style = MaterialTheme.typography.labelSmall.copy(

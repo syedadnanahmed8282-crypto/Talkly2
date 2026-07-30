@@ -69,6 +69,34 @@ class FirebaseChatRepository(private val context: Context) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    fun getCurrentUserName(): String {
+        val prefs = context.getSharedPreferences("talkly_auth_session", Context.MODE_PRIVATE)
+        val savedName = prefs.getString("user_name", "") ?: ""
+        if (savedName.isNotBlank()) return savedName
+        val fbName = try { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.displayName ?: "" } catch (e: Exception) { "" }
+        return if (fbName.isNotBlank()) fbName else "Talkly User"
+    }
+
+    fun resetLocalState() {
+        try {
+            messagesListener?.remove()
+            messagesListener = null
+            statusesListener?.remove()
+            statusesListener = null
+            usersListener?.remove()
+            usersListener = null
+            currentSyncedUserId = null
+            _messagesMap.value = emptyMap()
+            _familyMembers.value = emptyList()
+            _statuses.value = emptyList()
+            _blockedUserIds.value = emptySet()
+            contactPrefs.edit().clear().apply()
+            Log.d(TAG, "ChatRepository local state reset successfully.")
+        } catch (e: Exception) {
+            Log.w(TAG, "Error resetting ChatRepository local state: ${e.localizedMessage}")
+        }
+    }
+
     init {
         try {
             if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
@@ -111,28 +139,34 @@ class FirebaseChatRepository(private val context: Context) {
         return _blockedUserIds.value.contains(userId)
     }
 
+    private val DEMO_IDS = setOf(
+        "safwan", "israfel", "jolil", "samim", "akhter", "osman",
+        "mohammad_raiu", "dr_rashed", "monju", "sk_farid",
+        "mom", "dad", "grandma", "brother", "sister"
+    )
+
     private fun loadInitialFamilyMembers() {
+        contactPrefs.edit().putBoolean(KEY_DEMO_CLEARED, true).apply()
         val savedJson = contactPrefs.getString(KEY_SAVED_CONTACTS_JSON, null)
-        val demoCleared = contactPrefs.getBoolean(KEY_DEMO_CLEARED, false)
-
         val list = mutableListOf<FamilyMember>()
-
-        if (!demoCleared) {
-            list.addAll(DEFAULT_FAMILY_MEMBERS)
-        }
 
         if (!savedJson.isNullOrBlank()) {
             try {
                 val jsonArray = org.json.JSONArray(savedJson)
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
+                    val id = obj.getString("id")
+                    val phone = obj.optString("phone", "")
+                    if (id in DEMO_IDS || phone.startsWith("+880 1700-000")) {
+                        continue
+                    }
                     val member = FamilyMember(
-                        id = obj.getString("id"),
+                        id = id,
                         name = obj.getString("name"),
                         relation = obj.optString("relation", "Contact"),
                         avatarUrl = if (obj.has("avatarUrl") && !obj.isNull("avatarUrl")) obj.getString("avatarUrl") else null,
                         status = obj.optString("status", "Available for call 💬"),
-                        phone = obj.getString("phone"),
+                        phone = phone,
                         isOnline = obj.optBoolean("isOnline", true),
                         isTyping = false,
                         lastSeen = obj.optString("lastSeen", "Recently"),
@@ -142,7 +176,6 @@ class FirebaseChatRepository(private val context: Context) {
                         isRegisteredOnTalkly = obj.optBoolean("isRegisteredOnTalkly", false),
                         firebaseUid = if (obj.has("firebaseUid") && !obj.isNull("firebaseUid")) obj.getString("firebaseUid") else null
                     )
-                    // Avoid duplicate IDs
                     if (list.none { it.id == member.id }) {
                         list.add(member)
                     }
@@ -153,6 +186,7 @@ class FirebaseChatRepository(private val context: Context) {
         }
 
         _familyMembers.value = list
+        saveContactsToPrefs()
     }
 
     private fun saveContactsToPrefs() {
@@ -335,8 +369,7 @@ class FirebaseChatRepository(private val context: Context) {
 
     fun clearDemoContacts() {
         contactPrefs.edit().putBoolean(KEY_DEMO_CLEARED, true).apply()
-        val demoIds = setOf("mom", "dad", "grandma", "brother", "sister")
-        val filteredList = _familyMembers.value.filter { it.id !in demoIds }
+        val filteredList = _familyMembers.value.filter { it.id !in DEMO_IDS && !it.phone.startsWith("+880 1700-000") }
         _familyMembers.value = filteredList
         saveContactsToPrefs()
     }
@@ -473,7 +506,8 @@ class FirebaseChatRepository(private val context: Context) {
                             val memberSuffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(member.phone)
                             val cleanMemberPhone = com.family.talkly.util.PhoneUtils.cleanPhoneNumber(member.phone)
 
-                            var matchedDoc = registeredDocsBySuffix[memberSuffix]
+                            var matchedDoc = (if (!member.firebaseUid.isNullOrBlank()) registeredDocsByFullPhone[member.firebaseUid] else null)
+                                ?: registeredDocsBySuffix[memberSuffix]
                                 ?: registeredDocsByFullPhone[cleanMemberPhone]
                                 ?: registeredDocsByFullPhone[member.id]
 
@@ -499,31 +533,78 @@ class FirebaseChatRepository(private val context: Context) {
 
                             if (matchedDoc != null) {
                                 val uid = matchedDoc.id
-                                val bio = matchedDoc.getString("bio") ?: member.status
-                                val pic = matchedDoc.getString("profilePicUrl") ?: member.avatarUrl
+                                val bio = matchedDoc.getString("bio")
+                                val docPic = matchedDoc.getString("profilePicUrl")
                                 val realName = matchedDoc.getString("name") ?: member.name
                                 val online = matchedDoc.getBoolean("isOnline") ?: member.isOnline
                                 val seen = matchedDoc.getString("lastSeen") ?: member.lastSeen
                                 val activeTs = matchedDoc.getLong("lastActiveTimestamp") ?: member.lastActiveTimestamp
+
+                                val finalAvatarUrl = if (!docPic.isNullOrBlank()) docPic else member.avatarUrl
+
                                 member.copy(
                                     name = if (realName.isNotBlank()) realName else member.name,
                                     isRegisteredOnTalkly = true,
                                     firebaseUid = uid,
-                                    avatarUrl = if (!pic.isNullOrBlank()) pic else member.avatarUrl,
-                                    status = if (bio.isBlank()) "Available on Talkly 💬" else bio,
+                                    avatarUrl = finalAvatarUrl,
+                                    status = if (!bio.isNullOrBlank()) bio else if (member.status.isNotBlank()) member.status else "Available on Talkly 💬",
                                     isOnline = online,
                                     lastSeen = seen,
                                     lastActiveTimestamp = activeTs
                                 )
                             } else {
                                 member.copy(
-                                    isRegisteredOnTalkly = false,
-                                    firebaseUid = null,
-                                    status = "User not registered on Talkly"
+                                    isRegisteredOnTalkly = member.isRegisteredOnTalkly || member.firebaseUid != null,
+                                    firebaseUid = member.firebaseUid,
+                                    avatarUrl = member.avatarUrl,
+                                    status = if (member.isRegisteredOnTalkly || member.firebaseUid != null) member.status else "User not registered on Talkly"
                                 )
                             }
                         }
-                        _familyMembers.value = updatedMembers
+
+                        // Also discover registered users in Firestore not in local list
+                        val currentUserId = currentSyncedUserId ?: ""
+                        val newDiscoveredMembers = mutableListOf<FamilyMember>()
+
+                        for (doc in snapshot.documents) {
+                            val uid = doc.id
+                            if (uid == currentUserId) continue // Skip self
+                            val phone = doc.getString("phoneNumber") ?: ""
+                            val suffix = doc.getString("phoneSuffix") ?: com.family.talkly.util.PhoneUtils.extractPhoneSuffix(phone)
+                            val name = doc.getString("name") ?: ""
+                            val docPic = doc.getString("profilePicUrl")
+                            val bio = doc.getString("bio") ?: "Available on Talkly 💬"
+
+                            val isAlreadyInList = updatedMembers.any { m ->
+                                m.id == uid || m.firebaseUid == uid ||
+                                (suffix.isNotBlank() && com.family.talkly.util.PhoneUtils.extractPhoneSuffix(m.phone) == suffix)
+                            }
+
+                            if (!isAlreadyInList && name.isNotBlank()) {
+                                newDiscoveredMembers.add(
+                                    FamilyMember(
+                                        id = uid,
+                                        name = name,
+                                        relation = "Contact",
+                                        avatarUrl = if (!docPic.isNullOrBlank()) docPic else null,
+                                        status = bio,
+                                        phone = phone,
+                                        isOnline = doc.getBoolean("isOnline") ?: true,
+                                        isRegisteredOnTalkly = true,
+                                        firebaseUid = uid,
+                                        lastSeen = doc.getString("lastSeen") ?: "Recently",
+                                        lastActiveTimestamp = doc.getLong("lastActiveTimestamp") ?: System.currentTimeMillis()
+                                    )
+                                )
+                            }
+                        }
+
+                        val finalMemberList = updatedMembers.toMutableList()
+                        if (newDiscoveredMembers.isNotEmpty()) {
+                            finalMemberList.addAll(newDiscoveredMembers)
+                        }
+
+                        _familyMembers.value = finalMemberList
                         saveContactsToPrefs()
                     }
                 }
@@ -563,21 +644,52 @@ class FirebaseChatRepository(private val context: Context) {
         _messagesMap.value = emptyMap()
     }
 
-    fun getCanonicalMemberId(memberOrUidOrPhone: String): String {
-        if (memberOrUidOrPhone.isBlank()) return memberOrUidOrPhone
-        val suffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(memberOrUidOrPhone)
-        val existing = _familyMembers.value.firstOrNull { member ->
-            member.id == memberOrUidOrPhone ||
-            member.firebaseUid == memberOrUidOrPhone ||
-            member.phone == memberOrUidOrPhone ||
+    fun findMemberByUidOrPhoneOrId(uidOrPhoneOrId: String): FamilyMember? {
+        if (uidOrPhoneOrId.isBlank()) return null
+        val suffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(uidOrPhoneOrId)
+        return _familyMembers.value.firstOrNull { member ->
+            member.id == uidOrPhoneOrId ||
+            member.firebaseUid == uidOrPhoneOrId ||
+            member.phone == uidOrPhoneOrId ||
             (suffix.isNotBlank() && com.family.talkly.util.PhoneUtils.extractPhoneSuffix(member.phone) == suffix)
         }
+    }
+
+    fun getCanonicalMemberId(memberOrUidOrPhone: String): String {
+        if (memberOrUidOrPhone.isBlank()) return memberOrUidOrPhone
+        val existing = findMemberByUidOrPhoneOrId(memberOrUidOrPhone)
         return existing?.id ?: memberOrUidOrPhone
     }
 
     fun getMessagesForMember(memberId: String): List<ChatMessage> {
+        if (memberId.isBlank()) return emptyList()
         val canonicalId = getCanonicalMemberId(memberId)
-        return _messagesMap.value[canonicalId] ?: _messagesMap.value[memberId] ?: emptyList()
+        val suffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(memberId)
+        val member = findMemberByUidOrPhoneOrId(memberId) ?: findMemberByUidOrPhoneOrId(canonicalId)
+
+        val keysToTry = listOfNotNull(
+            canonicalId,
+            memberId,
+            member?.id,
+            member?.firebaseUid,
+            member?.phone
+        ).filter { it.isNotBlank() }.distinct()
+
+        for (key in keysToTry) {
+            val msgs = _messagesMap.value[key]
+            if (!msgs.isNullOrEmpty()) return msgs
+        }
+
+        if (suffix.isNotBlank()) {
+            for ((mapKey, msgs) in _messagesMap.value) {
+                if (msgs.isNotEmpty()) {
+                    val mapSuffix = com.family.talkly.util.PhoneUtils.extractPhoneSuffix(mapKey)
+                    if (mapSuffix == suffix) return msgs
+                }
+            }
+        }
+
+        return emptyList()
     }
 
     fun markMessagesAsRead(memberId: String) {
@@ -651,37 +763,150 @@ class FirebaseChatRepository(private val context: Context) {
         }
     }
 
+    private fun updateMessageInFirestore(targetMemberId: String, messageId: String, updates: Map<String, Any?>) {
+        val currentUserId = currentSyncedUserId ?: try {
+            com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        } catch (e: Exception) { null }
+
+        val targetMember = findMemberByUidOrPhoneOrId(targetMemberId)
+        val targetUid = targetMember?.firebaseUid.takeIf { !it.isNullOrBlank() }
+            ?: targetMember?.phone.takeIf { !it.isNullOrBlank() }
+            ?: getCanonicalMemberId(targetMemberId)
+
+        val uidsToUpdate = listOfNotNull(currentUserId, targetUid, targetMemberId, targetMember?.id).filter { it.isNotBlank() && it != "self" }.distinct()
+
+        for (uid in uidsToUpdate) {
+            try {
+                firestore?.collection("family_chats")
+                    ?.document(uid)
+                    ?.collection("messages")
+                    ?.document(messageId)
+                    ?.update(updates)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error updating message $messageId in Firestore for $uid: ${e.localizedMessage}")
+            }
+        }
+    }
+
+    private fun deleteMessageFromFirestoreForUser(messageId: String) {
+        val currentUserId = currentSyncedUserId ?: try {
+            com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        } catch (e: Exception) { null } ?: return
+
+        try {
+            firestore?.collection("family_chats")
+                ?.document(currentUserId)
+                ?.collection("messages")
+                ?.document(messageId)
+                ?.delete()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error deleting message $messageId from Firestore for user $currentUserId: ${e.localizedMessage}")
+        }
+    }
+
+    private fun deleteMessageFromFirestoreForEveryone(targetMemberId: String, messageId: String) {
+        val currentUserId = currentSyncedUserId ?: try {
+            com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        } catch (e: Exception) { null }
+
+        val targetMember = findMemberByUidOrPhoneOrId(targetMemberId)
+        val targetUid = targetMember?.firebaseUid.takeIf { !it.isNullOrBlank() }
+            ?: targetMember?.phone.takeIf { !it.isNullOrBlank() }
+            ?: getCanonicalMemberId(targetMemberId)
+
+        val uidsToDelete = listOfNotNull(currentUserId, targetUid, targetMemberId, targetMember?.id).filter { it.isNotBlank() && it != "self" }.distinct()
+
+        for (uid in uidsToDelete) {
+            try {
+                firestore?.collection("family_chats")
+                    ?.document(uid)
+                    ?.collection("messages")
+                    ?.document(messageId)
+                    ?.delete()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error deleting message $messageId from Firestore for $uid: ${e.localizedMessage}")
+            }
+        }
+    }
+
     fun toggleMessageReaction(memberId: String, messageId: String, reactionEmoji: String) {
+        val canonicalId = getCanonicalMemberId(memberId)
+        val currentMessages = getMessagesForMember(canonicalId)
+        if (currentMessages.isEmpty()) return
+        var newReaction: String? = null
+        val updatedMessages = currentMessages.map { msg ->
+            if (msg.id == messageId) {
+                newReaction = if (msg.reaction == reactionEmoji) null else reactionEmoji
+                msg.copy(reaction = newReaction)
+            } else {
+                msg
+            }
+        }
+
+        val updatedMap = _messagesMap.value.toMutableMap()
+        val targetMember = findMemberByUidOrPhoneOrId(memberId)
+        val keysToStore = listOfNotNull(canonicalId, memberId, targetMember?.id, targetMember?.firebaseUid, targetMember?.phone).filter { it.isNotBlank() }.distinct()
+        for (k in keysToStore) {
+            updatedMap[k] = updatedMessages
+        }
+        _messagesMap.value = updatedMap
+
+        updateMessageInFirestore(memberId, messageId, mapOf("reaction" to newReaction))
+    }
+
+    fun editMessage(memberId: String, messageId: String, newText: String) {
         val canonicalId = getCanonicalMemberId(memberId)
         val currentMessages = getMessagesForMember(canonicalId)
         if (currentMessages.isEmpty()) return
         val updatedMessages = currentMessages.map { msg ->
             if (msg.id == messageId) {
-                val newReaction = if (msg.reaction == reactionEmoji) null else reactionEmoji
-                val updatedMsg = msg.copy(reaction = newReaction)
-                
-                try {
-                    firestore?.collection("family_chats")
-                        ?.document(canonicalId)
-                        ?.collection("messages")
-                        ?.document(messageId)
-                        ?.update("reaction", newReaction)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error updating reaction in Firestore: ${e.localizedMessage}")
-                }
-                
-                updatedMsg
+                msg.copy(textContent = newText, isEdited = true)
             } else {
                 msg
             }
         }
-        
+
         val updatedMap = _messagesMap.value.toMutableMap()
-        updatedMap[canonicalId] = updatedMessages
-        if (canonicalId != memberId) {
-            updatedMap[memberId] = updatedMessages
+        val targetMember = findMemberByUidOrPhoneOrId(memberId)
+        val keysToStore = listOfNotNull(canonicalId, memberId, targetMember?.id, targetMember?.firebaseUid, targetMember?.phone).filter { it.isNotBlank() }.distinct()
+        for (k in keysToStore) {
+            updatedMap[k] = updatedMessages
         }
         _messagesMap.value = updatedMap
+
+        updateMessageInFirestore(memberId, messageId, mapOf("textContent" to newText, "isEdited" to true))
+    }
+
+    fun deleteMessageForYou(memberId: String, messageId: String) {
+        val canonicalId = getCanonicalMemberId(memberId)
+        val currentMessages = getMessagesForMember(canonicalId)
+        val updatedMessages = currentMessages.filterNot { it.id == messageId }
+
+        val updatedMap = _messagesMap.value.toMutableMap()
+        val targetMember = findMemberByUidOrPhoneOrId(memberId)
+        val keysToStore = listOfNotNull(canonicalId, memberId, targetMember?.id, targetMember?.firebaseUid, targetMember?.phone).filter { it.isNotBlank() }.distinct()
+        for (k in keysToStore) {
+            updatedMap[k] = updatedMessages
+        }
+        _messagesMap.value = updatedMap
+
+        deleteMessageFromFirestoreForUser(messageId)
+    }
+
+    fun deleteMessageForEveryone(memberId: String, messageId: String) {
+        val canonicalId = getCanonicalMemberId(memberId)
+        val currentMessages = getMessagesForMember(canonicalId)
+        val updatedMessages = currentMessages.filterNot { it.id == messageId }
+
+        val updatedMap = _messagesMap.value.toMutableMap()
+        val targetMember = findMemberByUidOrPhoneOrId(memberId)
+        val keysToStore = listOfNotNull(canonicalId, memberId, targetMember?.id, targetMember?.firebaseUid, targetMember?.phone).filter { it.isNotBlank() }.distinct()
+        for (k in keysToStore) {
+            updatedMap[k] = updatedMessages
+        }
+        _messagesMap.value = updatedMap
+
+        deleteMessageFromFirestoreForEveryone(memberId, messageId)
     }
 
     fun toggleStarMessage(memberId: String, messageId: String) {
@@ -800,6 +1025,17 @@ class FirebaseChatRepository(private val context: Context) {
                                 val readAtTimestamp = doc.getLong("readAtTimestamp")
                                 val isStarred = doc.getBoolean("isStarred") ?: false
                                 val isPinned = doc.getBoolean("isPinned") ?: false
+                                val reaction = doc.getString("reaction")
+                                val replyToMessageId = doc.getString("replyToMessageId")
+                                val replyToSenderName = doc.getString("replyToSenderName")
+                                val replyToText = doc.getString("replyToText")
+                                val isEdited = doc.getBoolean("isEdited") ?: false
+                                val isDeletedForEveryone = doc.getBoolean("isDeletedForEveryone") ?: false
+                                val deletedForUsers = (doc.get("deletedForUsers") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
+
+                                if (deletedForUsers.contains(currentUserId) || deletedForUsers.contains("self")) {
+                                    continue
+                                }
 
                                 // If this is an incoming message to current user that hasn't been marked delivered yet, update Firestore
                                 if (senderId != "self" && senderId != currentUserId && !isDelivered) {
@@ -836,8 +1072,15 @@ class FirebaseChatRepository(private val context: Context) {
                                     isDelivered = finalDelivered,
                                     isRead = isRead,
                                     readAtTimestamp = readAtTimestamp,
+                                    reaction = reaction,
                                     isStarred = isStarred,
-                                    isPinned = isPinned
+                                    isPinned = isPinned,
+                                    replyToMessageId = replyToMessageId,
+                                    replyToSenderName = replyToSenderName,
+                                    replyToText = replyToText,
+                                    isEdited = isEdited,
+                                    isDeletedForEveryone = isDeletedForEveryone,
+                                    deletedForUsers = deletedForUsers
                                 )
 
                                 val rawOtherPartyId = if (senderId == "self" || senderId == currentUserId) receiverId else senderId
@@ -846,7 +1089,9 @@ class FirebaseChatRepository(private val context: Context) {
                                 val canonicalOtherPartyId = getCanonicalMemberId(rawOtherPartyId)
                                 ensureContactInChatList(canonicalOtherPartyId)
 
-                                val existingMsgs = (currentMap[canonicalOtherPartyId] ?: currentMap[rawOtherPartyId] ?: emptyList()).toMutableList()
+                                val matchedMember = findMemberByUidOrPhoneOrId(rawOtherPartyId) ?: findMemberByUidOrPhoneOrId(canonicalOtherPartyId)
+
+                                val existingMsgs = (getMessagesForMember(rawOtherPartyId).ifEmpty { getMessagesForMember(canonicalOtherPartyId) }).toMutableList()
                                 val existingIndex = existingMsgs.indexOfFirst { it.id == id }
                                 if (existingIndex >= 0) {
                                     val existing = existingMsgs[existingIndex]
@@ -862,9 +1107,17 @@ class FirebaseChatRepository(private val context: Context) {
                                     existingMsgs.add(message)
                                 }
                                 existingMsgs.sortBy { it.timestamp }
-                                currentMap[canonicalOtherPartyId] = existingMsgs
-                                if (canonicalOtherPartyId != rawOtherPartyId) {
-                                    currentMap[rawOtherPartyId] = existingMsgs
+
+                                val keysToStore = listOfNotNull(
+                                    canonicalOtherPartyId,
+                                    rawOtherPartyId,
+                                    matchedMember?.id,
+                                    matchedMember?.firebaseUid,
+                                    matchedMember?.phone
+                                ).filter { it.isNotBlank() }.distinct()
+
+                                for (k in keysToStore) {
+                                    currentMap[k] = existingMsgs
                                 }
 
                             } catch (e: Exception) {
@@ -970,12 +1223,22 @@ class FirebaseChatRepository(private val context: Context) {
         val canonicalId = getCanonicalMemberId(memberId)
         ensureContactInChatList(canonicalId)
 
-        val senderUid = currentSyncedUserId ?: "self"
+        val targetMember = findMemberByUidOrPhoneOrId(memberId) ?: findMemberByUidOrPhoneOrId(canonicalId)
+        val targetUid = targetMember?.firebaseUid.takeIf { !it.isNullOrBlank() }
+            ?: targetMember?.phone.takeIf { !it.isNullOrBlank() }
+            ?: canonicalId
+
+        val authUid = try {
+            com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        } catch (e: Exception) { null }
+
+        val senderUid = authUid ?: currentSyncedUserId ?: "self"
+
         val newMessage = ChatMessage(
             id = "msg_${System.currentTimeMillis()}",
             senderId = senderUid,
             senderName = "You",
-            receiverId = canonicalId,
+            receiverId = targetUid,
             messageType = type,
             textContent = textContent,
             mediaUrl = mediaUrl,
@@ -991,21 +1254,30 @@ class FirebaseChatRepository(private val context: Context) {
         currentList.add(newMessage)
 
         val updatedMap = _messagesMap.value.toMutableMap()
-        updatedMap[canonicalId] = currentList
-        if (canonicalId != memberId) {
-            updatedMap[memberId] = currentList
+        val keysToStore = listOfNotNull(
+            canonicalId,
+            memberId,
+            targetMember?.id,
+            targetMember?.firebaseUid,
+            targetMember?.phone
+        ).filter { it.isNotBlank() }.distinct()
+
+        for (k in keysToStore) {
+            updatedMap[k] = currentList
         }
         _messagesMap.value = updatedMap
 
         // Sync to Firebase Firestore for both receiver and sender
-        val targetUid = _familyMembers.value.firstOrNull { it.id == canonicalId || it.id == memberId }?.firebaseUid ?: canonicalId
         try {
+            val senderActualName = getCurrentUserName()
+            val messageForReceiver = newMessage.copy(senderName = senderActualName)
+
             // Write to Receiver's collection
             firestore?.collection("family_chats")
                 ?.document(targetUid)
                 ?.collection("messages")
                 ?.document(newMessage.id)
-                ?.set(newMessage)
+                ?.set(messageForReceiver)
 
             // Write to Sender's collection
             if (!senderUid.isNullOrBlank() && senderUid != "self") {
@@ -1498,7 +1770,10 @@ class FirebaseChatRepository(private val context: Context) {
         saveStatusesToPrefs()
     }
 
-    fun getGroupedActiveStatuses(currentUserId: String = "self"): List<UserStatusGroup> {
+    fun getGroupedActiveStatuses(
+        currentUserId: String = "self",
+        currentUserProfile: com.family.talkly.data.models.UserProfile? = null
+    ): List<UserStatusGroup> {
         val activeStatuses = _statuses.value.filter { !it.isExpired(_simulatedTimeOffsetMs.value) }
         val groupedMap = activeStatuses.groupBy { it.userId }
 
@@ -1507,11 +1782,74 @@ class FirebaseChatRepository(private val context: Context) {
         val groups = groupedMap.map { (uId, statusList) ->
             val firstItem = statusList.first()
             val isSelfGroup = uId == "self" || uId == realCurrentUid || (currentSyncedUserId != null && uId == currentSyncedUserId)
+
+            val member = _familyMembers.value.firstOrNull {
+                it.id == uId || it.firebaseUid == uId || (it.phone.isNotBlank() && it.phone == uId)
+            }
+
+            val resolvedName = when {
+                isSelfGroup -> "My Status"
+                member != null && member.name.isNotBlank() -> member.name
+                else -> firstItem.userName
+            }
+
+            val resolvedAvatar = when {
+                isSelfGroup -> currentUserProfile?.profilePicUrl?.takeIf { it.isNotBlank() } ?: member?.avatarUrl ?: firstItem.userAvatarUrl
+                member != null && member.avatarUrl?.isNotBlank() == true -> member.avatarUrl
+                else -> firstItem.userAvatarUrl
+            }
+
+            val enrichedStatuses = statusList.map { status ->
+                val enrichedViewers = status.viewers.map { viewer ->
+                    val vMember = _familyMembers.value.firstOrNull {
+                        it.id == viewer.userId || it.firebaseUid == viewer.userId || (it.phone.isNotBlank() && it.phone == viewer.userId)
+                    }
+                    val isSelfViewer = viewer.userId == "self" || viewer.userId == realCurrentUid
+                    val vName = when {
+                        isSelfViewer -> currentUserProfile?.name ?: viewer.userName
+                        vMember != null && vMember.name.isNotBlank() -> vMember.name
+                        else -> viewer.userName
+                    }
+                    val vAvatar = when {
+                        isSelfViewer -> currentUserProfile?.profilePicUrl?.takeIf { it.isNotBlank() } ?: viewer.userAvatarUrl
+                        vMember != null && vMember.avatarUrl?.isNotBlank() == true -> vMember.avatarUrl
+                        else -> viewer.userAvatarUrl
+                    }
+                    viewer.copy(userName = vName, userAvatarUrl = vAvatar)
+                }
+
+                val enrichedLikes = status.likes.map { liker ->
+                    val lMember = _familyMembers.value.firstOrNull {
+                        it.id == liker.userId || it.firebaseUid == liker.userId || (it.phone.isNotBlank() && it.phone == liker.userId)
+                    }
+                    val isSelfLiker = liker.userId == "self" || liker.userId == realCurrentUid
+                    val lName = when {
+                        isSelfLiker -> currentUserProfile?.name ?: liker.userName
+                        lMember != null && lMember.name.isNotBlank() -> lMember.name
+                        else -> liker.userName
+                    }
+                    val lAvatar = when {
+                        isSelfLiker -> currentUserProfile?.profilePicUrl?.takeIf { it.isNotBlank() } ?: liker.userAvatarUrl
+                        lMember != null && lMember.avatarUrl?.isNotBlank() == true -> lMember.avatarUrl
+                        else -> liker.userAvatarUrl
+                    }
+                    liker.copy(userName = lName, userAvatarUrl = lAvatar)
+                }
+
+                val itemAuthorName = if (isSelfGroup) (currentUserProfile?.name ?: resolvedName) else resolvedName
+                status.copy(
+                    userName = itemAuthorName,
+                    userAvatarUrl = resolvedAvatar,
+                    viewers = enrichedViewers,
+                    likes = enrichedLikes
+                )
+            }.sortedBy { it.timestamp }
+
             UserStatusGroup(
                 userId = uId,
-                userName = if (isSelfGroup) "My Status" else firstItem.userName,
-                userAvatarUrl = firstItem.userAvatarUrl,
-                statuses = statusList.sortedBy { it.timestamp }
+                userName = resolvedName,
+                userAvatarUrl = resolvedAvatar,
+                statuses = enrichedStatuses
             )
         }.toMutableList()
 

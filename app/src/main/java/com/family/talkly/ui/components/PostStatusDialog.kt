@@ -311,8 +311,13 @@ fun PostStatusDialog(
                                     try {
                                         val uri = Uri.parse(currentUri)
                                         val compressor = com.family.talkly.util.MediaCompressorAndUploader(context)
-                                        val compressedFile = compressor.compressImage(uri) { _, _ -> }
-                                        compressor.uploadToFirebaseStorage(compressedFile, "status/media/${System.currentTimeMillis()}.jpg") { _, _ -> }
+                                        if (isVideoMedia) {
+                                            val compressedFile = compressor.compressVideo(uri) { _, _ -> }
+                                            compressor.uploadToFirebaseStorage(compressedFile, "status/media/${System.currentTimeMillis()}.mp4") { _, _ -> }
+                                        } else {
+                                            val compressedFile = compressor.compressImage(uri) { _, _ -> }
+                                            compressor.uploadToFirebaseStorage(compressedFile, "status/media/${System.currentTimeMillis()}.jpg") { _, _ -> }
+                                        }
                                     } catch (e: Exception) {
                                         currentUri
                                     }

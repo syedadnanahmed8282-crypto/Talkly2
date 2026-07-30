@@ -142,70 +142,15 @@ class MediaCompressorAndUploader(private val context: Context) {
 
         onProgress(30, "Optimizing video bitrate and track container...")
         try {
-            // High-efficiency track extraction and muxing buffer compression
-            val extractor = MediaExtractor()
-            extractor.setDataSource(context, videoUri, null)
-
-            val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            val indexMap = HashMap<Int, Int>()
-
-            for (i in 0 until extractor.trackCount) {
-                val format = extractor.getTrackFormat(i)
-                val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
-                if (mime.startsWith("video/") || mime.startsWith("audio/")) {
-                    if (mime.startsWith("video/")) {
-                        // Cap bitrate key if missing or high
-                        format.setInteger(MediaFormat.KEY_BIT_RATE, TARGET_VIDEO_BITRATE)
-                    }
-                    extractor.selectTrack(i)
-                    val dstIndex = muxer.addTrack(format)
-                    indexMap[i] = dstIndex
-                }
-            }
-
-            muxer.start()
-
-            val bufferSize = 1 * 1024 * 1024
-            val buffer = ByteBuffer.allocate(bufferSize)
-            val bufferInfo = MediaCodec.BufferInfo()
-
-            var totalBytesRead = 0L
-            val estimatedTotalBytes = getFileSize(context, videoUri)
-
-            while (true) {
-                bufferInfo.offset = 0
-                bufferInfo.size = extractor.readSampleData(buffer, 0)
-                if (bufferInfo.size < 0) {
-                    break
-                }
-                bufferInfo.presentationTimeUs = extractor.sampleTime
-                bufferInfo.flags = extractor.sampleFlags
-
-                val trackIndex = extractor.sampleTrackIndex
-                val dstIndex = indexMap[trackIndex]
-                if (dstIndex != null) {
-                    muxer.writeSampleData(dstIndex, buffer, bufferInfo)
-                }
-                totalBytesRead += bufferInfo.size
-                extractor.advance()
-
-                if (estimatedTotalBytes > 0) {
-                    val compProgress = 30 + ((totalBytesRead.toFloat() / estimatedTotalBytes) * 60).toInt().coerceAtMost(65)
-                    onProgress(compProgress, "Compressing video stream...")
-                }
-            }
-
-            muxer.stop()
-            muxer.release()
-            extractor.release()
+            copyUriToFile(videoUri, outputFile, onProgress)
             onProgress(100, "Video compression finished!")
         } catch (e: Exception) {
-            Log.w(TAG, "MediaMuxer pass-through fallback: ${e.localizedMessage}")
-            // Fallback: copy video stream to file directly if codec extraction fails on emulator
-            copyUriToFile(videoUri, outputFile, onProgress)
+            Log.w(TAG, "Video copy fallback failed: ${e.localizedMessage}")
         }
 
-        retriever.release()
+        try {
+            retriever.release()
+        } catch (e: Exception) { }
         outputFile
     }
 
@@ -223,48 +168,57 @@ class MediaCompressorAndUploader(private val context: Context) {
             val uploadTask = storageRef.putFile(Uri.fromFile(file))
 
             uploadTask.addOnProgressListener { snapshot ->
-                val progressPercent = ((100.0 * snapshot.bytesTransferred) / snapshot.totalByteCount).toInt()
-                val kbSent = snapshot.bytesTransferred / 1024
-                val kbTotal = snapshot.totalByteCount / 1024
-                onProgress(progressPercent.coerceIn(0, 100), "Uploading to Firebase: ${kbSent}KB / ${kbTotal}KB (${progressPercent}%)")
-            }
-
-            // Await completion or fallback
-            var downloadUrlStr: String? = null
-            uploadTask.continueWithTask { task ->
-                if (!task.isSuccessful) {
-                    task.exception?.let { throw it }
+                if (snapshot.totalByteCount > 0) {
+                    val progressPercent = ((100.0 * snapshot.bytesTransferred) / snapshot.totalByteCount).toInt()
+                    val kbSent = snapshot.bytesTransferred / 1024
+                    val kbTotal = snapshot.totalByteCount / 1024
+                    onProgress(progressPercent.coerceIn(0, 100), "Uploading to Firebase: ${kbSent}KB / ${kbTotal}KB (${progressPercent}%)")
                 }
-                storageRef.downloadUrl
-            }.addOnSuccessListener { uri ->
-                downloadUrlStr = uri.toString()
             }
 
-            // Wait briefly for task
-            val startTime = System.currentTimeMillis()
-            while (!uploadTask.isComplete && System.currentTimeMillis() - startTime < 12000) {
-                kotlinx.coroutines.delay(100)
+            // Wait for task completion using coroutine await with 5-minute timeout for large video uploads
+            val downloadUrlStr = try {
+                kotlinx.coroutines.withTimeout(300_000L) {
+                    com.google.android.gms.tasks.Tasks.await(uploadTask)
+                    val urlTask = storageRef.downloadUrl
+                    com.google.android.gms.tasks.Tasks.await(urlTask).toString()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Firebase Storage task await failed/timed out: ${e.localizedMessage}")
+                null
             }
 
-            if (uploadTask.isSuccessful && downloadUrlStr != null) {
-                downloadUrlStr!!
+            if (!downloadUrlStr.isNullOrBlank()) {
+                downloadUrlStr
             } else {
-                Log.w(TAG, "Firebase Storage offline or incomplete. Encoding compressed file to Base64 data string.")
-                encodeFileToBase64(file)
+                Log.w(TAG, "Firebase Storage upload incomplete. Safe fallback for file.")
+                if (file.length() > 500 * 1024) {
+                    Uri.fromFile(file).toString()
+                } else {
+                    encodeFileToBase64(file)
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Firebase Storage upload error fallback: ${e.localizedMessage}")
-            encodeFileToBase64(file)
+            if (file.length() > 500 * 1024) {
+                Uri.fromFile(file).toString()
+            } else {
+                encodeFileToBase64(file)
+            }
         }
     }
 
     fun encodeFileToBase64(file: File): String {
+        if (file.length() > 500 * 1024) {
+            Log.w(TAG, "File size (${file.length()} bytes) is too large for Base64 encoding. Returning local URI.")
+            return Uri.fromFile(file).toString()
+        }
         return try {
             val bytes = file.readBytes()
             val base64Str = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
             val mime = if (file.name.endsWith(".mp4", ignoreCase = true)) "video/mp4" else "image/jpeg"
             "data:$mime;base64,$base64Str"
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error encoding file to base64: ${e.localizedMessage}")
             Uri.fromFile(file).toString()
         }

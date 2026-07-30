@@ -197,17 +197,26 @@ fun StatusViewerDialog(
                     )
                 }
         ) {
-            // Background Photo Status
+            // Background Photo / Video Status
             if (currentStatus.photoUrl != null) {
-                val mediaModel = remember(currentStatus.photoUrl) {
-                    com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentStatus.photoUrl)
+                val isVideoStatus = currentStatus.isVideo || currentStatus.photoUrl.contains("video/") || currentStatus.photoUrl.contains(".mp4")
+                if (isVideoStatus) {
+                    TalklyVideoPlayer(
+                        videoUrl = currentStatus.photoUrl,
+                        modifier = Modifier.fillMaxSize(),
+                        autoPlay = true
+                    )
+                } else {
+                    val mediaModel = remember(currentStatus.photoUrl) {
+                        com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentStatus.photoUrl)
+                    }
+                    AsyncImage(
+                        model = mediaModel,
+                        contentDescription = "Status image",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
                 }
-                AsyncImage(
-                    model = mediaModel,
-                    contentDescription = "Status image",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
                 // Bottom Gradient Overlay for text readability & interaction controls
                 Box(
                     modifier = Modifier
@@ -312,9 +321,12 @@ fun StatusViewerDialog(
                                 .border(1.5.dp, SecondaryLightSage, CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (currentGroup.userAvatarUrl != null) {
+                            if (!currentGroup.userAvatarUrl.isNullOrBlank()) {
+                                val mediaModel = remember(currentGroup.userAvatarUrl) {
+                                    com.family.talkly.util.PhoneUtils.getCoilMediaModel(currentGroup.userAvatarUrl)
+                                }
                                 AsyncImage(
-                                    model = currentGroup.userAvatarUrl,
+                                    model = mediaModel,
                                     contentDescription = currentGroup.userName,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
@@ -632,11 +644,23 @@ private fun StatusAnalyticsModal(
                                             .background(SecondaryLightSage),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = viewer.userName.take(1).uppercase(),
-                                            fontWeight = FontWeight.Bold,
-                                            color = PrimaryDarkPurple
-                                        )
+                                        if (!viewer.userAvatarUrl.isNullOrBlank()) {
+                                            val mediaModel = remember(viewer.userAvatarUrl) {
+                                                com.family.talkly.util.PhoneUtils.getCoilMediaModel(viewer.userAvatarUrl)
+                                            }
+                                            AsyncImage(
+                                                model = mediaModel,
+                                                contentDescription = viewer.userName,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Text(
+                                                text = viewer.userName.take(1).uppercase(),
+                                                fontWeight = FontWeight.Bold,
+                                                color = PrimaryDarkPurple
+                                            )
+                                        }
                                     }
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column(modifier = Modifier.weight(1f)) {
@@ -644,7 +668,10 @@ private fun StatusAnalyticsModal(
                                             text = viewer.userName,
                                             fontWeight = FontWeight.Bold,
                                             color = Color.White,
-                                            fontSize = 14.sp
+                                            fontSize = 14.sp,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                         )
                                         Text(
                                             text = viewer.timeAgo,
@@ -686,11 +713,23 @@ private fun StatusAnalyticsModal(
                                             .background(Color(0xFFFF2D55)),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = liker.userName.take(1).uppercase(),
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color.White
-                                        )
+                                        if (!liker.userAvatarUrl.isNullOrBlank()) {
+                                            val mediaModel = remember(liker.userAvatarUrl) {
+                                                com.family.talkly.util.PhoneUtils.getCoilMediaModel(liker.userAvatarUrl)
+                                            }
+                                            AsyncImage(
+                                                model = mediaModel,
+                                                contentDescription = liker.userName,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Text(
+                                                text = liker.userName.take(1).uppercase(),
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White
+                                            )
+                                        }
                                     }
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Text(
@@ -698,6 +737,9 @@ private fun StatusAnalyticsModal(
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White,
                                         fontSize = 14.sp,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f)
                                     )
                                     Icon(

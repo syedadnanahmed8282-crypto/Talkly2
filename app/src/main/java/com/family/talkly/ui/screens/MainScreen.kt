@@ -77,7 +77,7 @@ fun MainScreen(
 
     val currentUid = currentUserProfile?.uid?.ifBlank { "self" } ?: "self"
     val statusGroups = remember(statuses, familyMembers, simulatedTimeOffsetMs, currentUserProfile) {
-        chatRepository.getGroupedActiveStatuses(currentUid)
+        chatRepository.getGroupedActiveStatuses(currentUid, currentUserProfile)
     }
 
     val callInfo by zegoManager.callState.collectAsState()
@@ -86,6 +86,25 @@ fun MainScreen(
     androidx.compose.runtime.LaunchedEffect(currentUserProfile?.uid) {
         if (currentUserProfile != null && currentUserProfile.uid.isNotBlank()) {
             chatRepository.startRealtimeMessageSync(currentUserProfile.uid)
+            zegoManager.startListeningForIncomingCalls(currentUserProfile.uid) { uid ->
+                chatRepository.findMemberByUidOrPhoneOrId(uid)
+            }
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(currentUserProfile?.uid) {
+        val uid = currentUserProfile?.uid
+        if (!uid.isNullOrBlank()) {
+            while (true) {
+                val now = System.currentTimeMillis()
+                chatRepository.setMemberPresence(
+                    memberId = uid,
+                    isOnline = true,
+                    lastSeen = "Online",
+                    lastActiveTimestamp = now
+                )
+                kotlinx.coroutines.delay(45_000L)
+            }
         }
     }
 
@@ -164,7 +183,19 @@ fun MainScreen(
             val target = pendingCallMember
             val type = pendingCallType
             if (target != null && type != null) {
-                zegoManager.startOutgoingCall(target, type)
+                val profile = currentUserProfile
+                val myUid = profile?.uid ?: currentUid
+                val myName = profile?.name ?: "Talkly User"
+                val myPhone = profile?.phoneNumber ?: ""
+                val myAvatar = profile?.profilePicUrl
+                zegoManager.startOutgoingCall(
+                    member = target,
+                    callType = type,
+                    currentUserUid = myUid,
+                    currentUserName = myName,
+                    currentUserPhone = myPhone,
+                    currentUserAvatarUrl = myAvatar
+                )
             }
         } else {
             Toast.makeText(context, "Camera and Microphone permissions are required for calls", Toast.LENGTH_LONG).show()
@@ -180,7 +211,8 @@ fun MainScreen(
             return
         }
 
-        if (!target.isRegisteredOnTalkly || target.firebaseUid.isNullOrEmpty()) {
+        val targetUid = target.firebaseUid.takeIf { !it.isNullOrBlank() } ?: target.id
+        if (targetUid.isBlank()) {
             Toast.makeText(context, "User not registered on Talkly", Toast.LENGTH_SHORT).show()
             return
         }
@@ -188,8 +220,22 @@ fun MainScreen(
         val hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
+        val profile = currentUserProfile
+        val myUid = profile?.uid ?: currentUid
+        val myName = profile?.name ?: "Talkly User"
+        val myPhone = profile?.phoneNumber ?: ""
+        val myAvatar = profile?.profilePicUrl
+
         if (hasCamera && hasMic) {
-            zegoManager.startOutgoingCall(target, callType, isBlocked = isBlocked)
+            zegoManager.startOutgoingCall(
+                member = target,
+                callType = callType,
+                currentUserUid = myUid,
+                currentUserName = myName,
+                currentUserPhone = myPhone,
+                currentUserAvatarUrl = myAvatar,
+                isBlocked = isBlocked
+            )
         } else {
             pendingCallMember = target
             pendingCallType = callType
@@ -202,8 +248,8 @@ fun MainScreen(
         IncomingCallDialog(
             member = callInfo.targetMember!!,
             callType = callInfo.callType,
-            onAccept = { zegoManager.acceptCall() },
-            onDecline = { zegoManager.declineCall() }
+            onAccept = { zegoManager.acceptCall(currentUserProfile?.uid ?: currentUid) },
+            onDecline = { zegoManager.declineCall(currentUserProfile?.uid ?: currentUid) }
         )
     }
 
@@ -211,7 +257,7 @@ fun MainScreen(
     if (callInfo.state == CallState.ACTIVE || callInfo.state == CallState.OUTGOING_RINGING || callInfo.state == CallState.OUTGOING_CALLING) {
         CallScreen(
             callInfo = callInfo,
-            onEndCall = { zegoManager.endCall() },
+            onEndCall = { zegoManager.endCall(currentUserProfile?.uid ?: currentUid) },
             onToggleMute = { zegoManager.toggleMute() },
             onToggleCamera = { zegoManager.toggleCamera() },
             onFlipCamera = { zegoManager.flipCamera() },
@@ -224,7 +270,7 @@ fun MainScreen(
     if (activeChatMember != null) {
         val memberId = activeChatMember!!.id
         val currentMember = familyMembers.firstOrNull { it.id == memberId } ?: activeChatMember!!
-        val currentMessages = messagesMap[currentMember.id] ?: emptyList()
+        val currentMessages = chatRepository.getMessagesForMember(currentMember.id)
 
         ChatDetailScreen(
             member = currentMember,
@@ -245,6 +291,15 @@ fun MainScreen(
             },
             onToggleReaction = { messageId, reactionEmoji ->
                 chatRepository.toggleMessageReaction(currentMember.id, messageId, reactionEmoji)
+            },
+            onEditMessage = { messageId, newText ->
+                chatRepository.editMessage(currentMember.id, messageId, newText)
+            },
+            onDeleteMessageForYou = { messageId ->
+                chatRepository.deleteMessageForYou(currentMember.id, messageId)
+            },
+            onDeleteMessageForEveryone = { messageId ->
+                chatRepository.deleteMessageForEveryone(currentMember.id, messageId)
             },
             onToggleStarMessage = { messageId ->
                 chatRepository.toggleStarMessage(currentMember.id, messageId)

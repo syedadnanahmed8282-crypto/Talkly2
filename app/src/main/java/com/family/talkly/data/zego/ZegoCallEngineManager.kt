@@ -2,10 +2,14 @@ package com.family.talkly.data.zego
 
 import android.content.Context
 import android.util.Log
+import android.widget.Toast
 import com.family.talkly.data.models.CallDirection
 import com.family.talkly.data.models.CallLog
 import com.family.talkly.data.models.CallType
 import com.family.talkly.data.models.FamilyMember
+import com.google.firebase.FirebaseApp
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,37 +62,7 @@ class ZegoCallEngineManager(private val context: Context) {
     private val _callState = MutableStateFlow(CurrentCallInfo())
     val callState: StateFlow<CurrentCallInfo> = _callState.asStateFlow()
 
-    private val _callLogs = MutableStateFlow<List<CallLog>>(
-        listOf(
-            CallLog(
-                id = "log_1",
-                memberId = "mom",
-                memberName = "Mom ❤️",
-                direction = CallDirection.INCOMING,
-                callType = CallType.VIDEO,
-                timestamp = System.currentTimeMillis() - 3600000,
-                durationSeconds = 245
-            ),
-            CallLog(
-                id = "log_2",
-                memberId = "dad",
-                memberName = "Dad 👨‍👧‍👦",
-                direction = CallDirection.OUTGOING,
-                callType = CallType.AUDIO,
-                timestamp = System.currentTimeMillis() - 86400000,
-                durationSeconds = 112
-            ),
-            CallLog(
-                id = "log_3",
-                memberId = "grandma",
-                memberName = "Grandma 👵",
-                direction = CallDirection.MISSED,
-                callType = CallType.VIDEO,
-                timestamp = System.currentTimeMillis() - 172800000,
-                durationSeconds = 0
-            )
-        )
-    )
+    private val _callLogs = MutableStateFlow<List<CallLog>>(emptyList())
     val callLogs: StateFlow<List<CallLog>> = _callLogs.asStateFlow()
 
     private var timerJob: Job? = null
@@ -96,28 +70,123 @@ class ZegoCallEngineManager(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.Main)
     var onCallLogAdded: ((CallLog) -> Unit)? = null
 
+    private var firestore: FirebaseFirestore? = null
+    private var callSignalListener: ListenerRegistration? = null
+    private var currentListeningUserId: String? = null
+
     init {
+        try {
+            if (FirebaseApp.getApps(context).isNotEmpty()) {
+                firestore = FirebaseFirestore.getInstance()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Firestore init in ZegoCallEngineManager exception: ${e.localizedMessage}")
+        }
         Log.i(TAG, "ZEGOCloud Express Engine configured with AppID: $ZEGO_APP_ID for Firebase Project $FIREBASE_PROJECT_ID")
     }
 
-    fun startOutgoingCall(member: FamilyMember, callType: CallType, isBlocked: Boolean = false) {
+    fun startListeningForIncomingCalls(
+        currentUserId: String,
+        memberLookup: ((String) -> FamilyMember?)? = null
+    ) {
+        if (currentUserId.isBlank()) return
+        if (currentListeningUserId == currentUserId && callSignalListener != null) return
+
+        callSignalListener?.remove()
+        currentListeningUserId = currentUserId
+
+        try {
+            callSignalListener = firestore?.collection("call_signals")
+                ?.document(currentUserId)
+                ?.addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Listen failed for call signals: ${error.localizedMessage}")
+                        return@addSnapshotListener
+                    }
+
+                    if (snapshot != null && snapshot.exists()) {
+                        val status = snapshot.getString("status") ?: return@addSnapshotListener
+                        val callId = snapshot.getString("callId") ?: ""
+                        val callerUid = snapshot.getString("callerUid") ?: ""
+                        val callerName = snapshot.getString("callerName") ?: "Talkly User"
+                        val callerPhone = snapshot.getString("callerPhone") ?: ""
+                        val callerAvatar = snapshot.getString("callerAvatarUrl")
+                        val callTypeStr = snapshot.getString("callType") ?: "VIDEO"
+                        val callType = try { CallType.valueOf(callTypeStr) } catch (e: Exception) { CallType.VIDEO }
+                        val timestamp = snapshot.getLong("timestamp") ?: 0L
+
+                        // Ignore stale signals older than 45 seconds
+                        if (System.currentTimeMillis() - timestamp > 45000) return@addSnapshotListener
+
+                        when (status) {
+                            "RINGING" -> {
+                                if (callerUid != currentUserId && _callState.value.state == CallState.IDLE) {
+                                    val foundMember = memberLookup?.invoke(callerUid)
+                                    val targetMember = foundMember ?: FamilyMember(
+                                        id = callerUid,
+                                        name = callerName,
+                                        relation = "Contact",
+                                        avatarUrl = callerAvatar.takeIf { !it.isNullOrBlank() },
+                                        phone = callerPhone,
+                                        isOnline = true,
+                                        isRegisteredOnTalkly = true,
+                                        firebaseUid = callerUid
+                                    )
+
+                                    _callState.value = CurrentCallInfo(
+                                        state = CallState.INCOMING_RINGING,
+                                        callType = callType,
+                                        targetMember = targetMember,
+                                        roomID = callId,
+                                        durationSeconds = 0
+                                    )
+                                }
+                            }
+                            "ACCEPTED" -> {
+                                val currentState = _callState.value.state
+                                if (currentState == CallState.OUTGOING_CALLING || currentState == CallState.OUTGOING_RINGING) {
+                                    _callState.value = _callState.value.copy(state = CallState.ACTIVE)
+                                    startCallTimer()
+                                }
+                            }
+                            "DECLINED", "CANCELLED", "ENDED" -> {
+                                if (_callState.value.state != CallState.IDLE) {
+                                    endCallInternal("Call $status")
+                                }
+                            }
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error setting up call signals listener: ${e.localizedMessage}")
+        }
+    }
+
+    fun startOutgoingCall(
+        member: FamilyMember,
+        callType: CallType,
+        currentUserUid: String,
+        currentUserName: String,
+        currentUserPhone: String,
+        currentUserAvatarUrl: String?,
+        isBlocked: Boolean = false
+    ) {
         if (isBlocked) {
             Log.w(TAG, "Cannot start call: ${member.name} is blocked")
-            android.widget.Toast.makeText(context, "Call failed: User is blocked", android.widget.Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Call failed: User is blocked", Toast.LENGTH_SHORT).show()
             endCallInternal("User Blocked")
             return
         }
 
-        if (!member.isRegisteredOnTalkly || member.firebaseUid.isNullOrEmpty()) {
-            Log.w(TAG, "Cannot start call: ${member.name} is not registered on Talkly")
-            android.widget.Toast.makeText(context, "User not registered on Talkly", android.widget.Toast.LENGTH_SHORT).show()
+        val targetUid = member.firebaseUid.takeIf { !it.isNullOrBlank() } ?: member.id
+        if (targetUid.isBlank()) {
+            Log.w(TAG, "Cannot start call: ${member.name} has no valid UID")
+            Toast.makeText(context, "User not registered on Talkly", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val targetUid = member.firebaseUid!!
-        val roomID = "talkly_room_${targetUid}_${System.currentTimeMillis()}"
+        val roomID = "talkly_room_${currentUserUid}_${System.currentTimeMillis()}"
 
-        // Initial state: OUTGOING_CALLING ("Calling...")
         _callState.value = CurrentCallInfo(
             state = CallState.OUTGOING_CALLING,
             callType = callType,
@@ -129,26 +198,46 @@ class ZegoCallEngineManager(private val context: Context) {
             isFrontCamera = true,
             isSpeakerOn = true
         )
-        Log.d(TAG, "Starting outgoing ${callType.name} call to registered user Firebase UID: $targetUid (${member.name}) in room $roomID via ZEGOCloud")
+        Log.d(TAG, "Starting outgoing ${callType.name} call to Firebase UID: $targetUid (${member.name}) in room $roomID")
+
+        val signalData = mapOf(
+            "callId" to roomID,
+            "callerUid" to currentUserUid,
+            "callerName" to currentUserName,
+            "callerPhone" to currentUserPhone,
+            "callerAvatarUrl" to (currentUserAvatarUrl ?: ""),
+            "calleeUid" to targetUid,
+            "callType" to callType.name,
+            "status" to "RINGING",
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        try {
+            firestore?.collection("call_signals")?.document(targetUid)?.set(signalData)
+            if (currentUserUid.isNotBlank()) {
+                firestore?.collection("call_signals")?.document(currentUserUid)?.set(signalData)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to write call signal to Firestore: ${e.localizedMessage}")
+        }
 
         ringingTimeoutJob?.cancel()
 
-        // Step 1: Transition to OUTGOING_RINGING ("Ringing...") after connection check if target is online
         scope.launch {
             delay(1500)
-            if (_callState.value.state == CallState.OUTGOING_CALLING && member.isOnline) {
+            if (_callState.value.state == CallState.OUTGOING_CALLING) {
                 _callState.value = _callState.value.copy(state = CallState.OUTGOING_RINGING)
             }
         }
 
-        // Step 2: 30 Seconds Ringing Timeout (auto disconnect if unanswered)
         ringingTimeoutJob = scope.launch {
             delay(30000)
             val currentState = _callState.value.state
             if (currentState == CallState.OUTGOING_CALLING || currentState == CallState.OUTGOING_RINGING) {
                 Log.d(TAG, "Call timed out after 30s: No answer from ${member.name}")
-                android.widget.Toast.makeText(context, "No answer from ${member.name}", android.widget.Toast.LENGTH_SHORT).show()
-                endCall()
+                Toast.makeText(context, "No answer from ${member.name}", Toast.LENGTH_SHORT).show()
+                cancelCallSignal(targetUid, currentUserUid)
+                endCall(currentUserUid)
             }
         }
     }
@@ -164,17 +253,33 @@ class ZegoCallEngineManager(private val context: Context) {
         )
     }
 
-    fun acceptCall() {
+    fun acceptCall(currentUserUid: String? = null) {
         ringingTimeoutJob?.cancel()
         val current = _callState.value
+        val targetUid = current.targetMember?.firebaseUid ?: current.targetMember?.id ?: ""
+
         _callState.value = current.copy(state = CallState.ACTIVE)
         startCallTimer()
+
+        val updateData = mapOf("status" to "ACCEPTED")
+        try {
+            if (targetUid.isNotBlank()) {
+                firestore?.collection("call_signals")?.document(targetUid)?.update(updateData)
+            }
+            if (!currentUserUid.isNullOrBlank()) {
+                firestore?.collection("call_signals")?.document(currentUserUid)?.update(updateData)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update call signal ACCEPTED: ${e.localizedMessage}")
+        }
     }
 
-    fun declineCall() {
+    fun declineCall(currentUserUid: String? = null) {
         ringingTimeoutJob?.cancel()
         val current = _callState.value
         val member = current.targetMember
+        val targetUid = member?.firebaseUid ?: member?.id ?: ""
+
         if (member != null) {
             addCallLog(
                 CallLog(
@@ -188,13 +293,28 @@ class ZegoCallEngineManager(private val context: Context) {
                 )
             )
         }
+
+        val updateData = mapOf("status" to "DECLINED")
+        try {
+            if (targetUid.isNotBlank()) {
+                firestore?.collection("call_signals")?.document(targetUid)?.update(updateData)
+            }
+            if (!currentUserUid.isNullOrBlank()) {
+                firestore?.collection("call_signals")?.document(currentUserUid)?.update(updateData)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update call signal DECLINED: ${e.localizedMessage}")
+        }
+
         endCallInternal("Call Declined")
     }
 
-    fun endCall() {
+    fun endCall(currentUserUid: String? = null) {
         ringingTimeoutJob?.cancel()
         val current = _callState.value
         val member = current.targetMember
+        val targetUid = member?.firebaseUid ?: member?.id ?: ""
+
         if (member != null) {
             val direction = if (current.state == CallState.OUTGOING_RINGING || current.state == CallState.OUTGOING_CALLING) CallDirection.OUTGOING else CallDirection.INCOMING
             addCallLog(
@@ -209,7 +329,23 @@ class ZegoCallEngineManager(private val context: Context) {
                 )
             )
         }
+
+        cancelCallSignal(targetUid, currentUserUid)
         endCallInternal("Call Ended")
+    }
+
+    private fun cancelCallSignal(targetUid: String, currentUserUid: String?) {
+        val updateData = mapOf("status" to "ENDED")
+        try {
+            if (targetUid.isNotBlank()) {
+                firestore?.collection("call_signals")?.document(targetUid)?.update(updateData)
+            }
+            if (!currentUserUid.isNullOrBlank()) {
+                firestore?.collection("call_signals")?.document(currentUserUid)?.update(updateData)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update call signal ENDED: ${e.localizedMessage}")
+        }
     }
 
     private fun endCallInternal(reason: String) {

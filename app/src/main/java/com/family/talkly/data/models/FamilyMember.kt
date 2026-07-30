@@ -16,11 +16,26 @@ data class FamilyMember(
     val isRegisteredOnTalkly: Boolean = false,
     val firebaseUid: String? = null
 ) {
-    fun isRecentlyActive(maxInactiveMs: Long = 45 * 60 * 1000L): Boolean {
+    fun isRecentlyActive(maxInactiveMs: Long = 2 * 60 * 1000L): Boolean {
         if (!isOnline) return false
         val now = System.currentTimeMillis()
-        if (lastActiveTimestamp <= 0L) return isOnline
+        if (lastActiveTimestamp <= 0L) return false
         return (now - lastActiveTimestamp) <= maxInactiveMs
+    }
+
+    fun getFormattedLastSeen(): String {
+        if (isRecentlyActive()) return "Online"
+        if (lastActiveTimestamp > 0L) {
+            val formatted = com.family.talkly.util.PhoneUtils.formatLastSeenTime(lastActiveTimestamp)
+            if (formatted.isNotBlank() && !formatted.equals("Online", ignoreCase = true) && !formatted.startsWith("online", ignoreCase = true)) {
+                return formatted
+            }
+        }
+        val cleanLastSeen = lastSeen.trim().removeSuffix(".")
+        if (cleanLastSeen.isNotBlank() && !cleanLastSeen.equals("Online", ignoreCase = true) && !cleanLastSeen.startsWith("online", ignoreCase = true)) {
+            return cleanLastSeen
+        }
+        return "Recently"
     }
 
     val firstName: String
@@ -46,109 +61,4 @@ data class FamilyMember(
         }
 }
 
-val DEFAULT_FAMILY_MEMBERS = listOf(
-    FamilyMember(
-        id = "safwan",
-        name = "Safwan",
-        relation = "Friend",
-        status = "আচ্ছা সকালে কথা হবে",
-        phone = "+880 1700-000001",
-        isOnline = true,
-        isTyping = false,
-        lastSeen = "6:30 PM",
-        unreadCount = 0
-    ),
-    FamilyMember(
-        id = "israfel",
-        name = "Md Israfel Hosen",
-        relation = "Contact",
-        status = "Tap to view",
-        phone = "+880 1700-000002",
-        isOnline = false,
-        isTyping = false,
-        lastSeen = "Sat",
-        unreadCount = 0
-    ),
-    FamilyMember(
-        id = "jolil",
-        name = "Jolil",
-        relation = "Contact",
-        status = "Missed Video Call",
-        phone = "+880 1700-000003",
-        isOnline = false,
-        isTyping = false,
-        lastSeen = "Fri",
-        unreadCount = 0
-    ),
-    FamilyMember(
-        id = "samim",
-        name = "সামিম",
-        relation = "Contact",
-        status = "Missed Audio Call",
-        phone = "+880 1700-000004",
-        isOnline = false,
-        isTyping = false,
-        lastSeen = "Mon",
-        unreadCount = 0
-    ),
-    FamilyMember(
-        id = "akhter",
-        name = "md Akhter Høssain° •:...",
-        relation = "Contact",
-        status = "Tap to view",
-        phone = "+880 1700-000005",
-        isOnline = false,
-        isTyping = false,
-        lastSeen = "Jul 10",
-        unreadCount = 0
-    ),
-    FamilyMember(
-        id = "osman",
-        name = "Osman Vi",
-        relation = "Contact",
-        status = "Missed Audio Call",
-        phone = "+880 1700-000006",
-        isOnline = false,
-        isTyping = false,
-        lastSeen = "Jun 30",
-        unreadCount = 0
-    ),
-    FamilyMember(
-        id = "mohammad_raiu",
-        name = "Mohammad Raiu Mha...",
-        relation = "Contact",
-        status = "Tap to view",
-        phone = "+880 1700-000007",
-        isOnline = false,
-        isTyping = false,
-        lastSeen = "Jun 29",
-        unreadCount = 0
-    ),
-    FamilyMember(
-        id = "dr_rashed",
-        name = "Dr. Rashed",
-        relation = "Doctor",
-        status = "Medical updates",
-        phone = "+880 1700-000008",
-        isOnline = true,
-        unreadCount = 3
-    ),
-    FamilyMember(
-        id = "monju",
-        name = "Monju",
-        relation = "Friend",
-        status = "Available",
-        phone = "+880 1700-000009",
-        isOnline = true,
-        unreadCount = 1
-    ),
-    FamilyMember(
-        id = "sk_farid",
-        name = "Sk F A R I D",
-        relation = "Friend",
-        status = "At work",
-        phone = "+880 1700-000010",
-        isOnline = true,
-        unreadCount = 2
-    )
-)
+val DEFAULT_FAMILY_MEMBERS = emptyList<FamilyMember>()

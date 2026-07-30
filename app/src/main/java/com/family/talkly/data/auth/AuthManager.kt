@@ -46,8 +46,32 @@ class AuthManager(private val context: Context) {
          * Converts phone number into a deterministic internal email address for Firebase Auth
          */
         fun getInternalEmail(phoneNumber: String): String {
+            val suffix = PhoneUtils.extractPhoneSuffix(phoneNumber)
+            return if (suffix.length >= 7) {
+                "p_${suffix}@talkly.app"
+            } else {
+                val cleanNumber = phoneNumber.replace("+", "").replace(" ", "").replace("-", "").trim()
+                "${cleanNumber}@talkly.app"
+            }
+        }
+
+        fun getCandidateInternalEmails(phoneNumber: String): List<String> {
+            val suffix = PhoneUtils.extractPhoneSuffix(phoneNumber)
             val cleanNumber = phoneNumber.replace("+", "").replace(" ", "").replace("-", "").trim()
-            return "${cleanNumber}@talkly.app"
+            val candidates = mutableListOf<String>()
+
+            if (suffix.length >= 7) {
+                candidates.add("p_${suffix}@talkly.app")
+            }
+            if (cleanNumber.isNotBlank()) {
+                candidates.add("${cleanNumber}@talkly.app")
+            }
+            if (suffix.isNotBlank()) {
+                candidates.add("0${suffix}@talkly.app")
+                candidates.add("880${suffix}@talkly.app")
+                candidates.add("+880${suffix}@talkly.app")
+            }
+            return candidates.distinct()
         }
     }
 
@@ -216,7 +240,7 @@ class AuthManager(private val context: Context) {
     }
 
     /**
-     * Signs in an existing user with Mobile Phone Number and Password
+     * Signs in an existing user with Mobile Phone Number and Password, with fallback for legacy email formats
      */
     fun signInWithPhoneAndPassword(
         phoneNumber: String,
@@ -231,46 +255,73 @@ class AuthManager(private val context: Context) {
             return
         }
 
-        val internalEmail = getInternalEmail(phoneNumber)
+        val candidateEmails = getCandidateInternalEmails(phoneNumber)
         _authState.value = AuthState.VerificationInProgress("Signing in...")
 
-        try {
-            getFirebaseAuth().signInWithEmailAndPassword(internalEmail, password)
-                .addOnCompleteListener { task ->
-                    if (task.isSuccessful) {
-                        val user = task.result?.user
-                        val uid = user?.uid
-                        if (uid != null) {
-                            Log.d(TAG, "Sign in successful for phone $phoneNumber ($internalEmail), UID: $uid")
-                            checkUserProfileInFirestore(uid, phoneNumber)
-                            onSuccess()
+        fun trySignIn(index: Int) {
+            if (index >= candidateEmails.size) {
+                val formatted = "No account found with this phone number or incorrect password. Please check your credentials."
+                _authState.value = AuthState.Error(formatted)
+                onError(formatted)
+                return
+            }
+
+            val currentEmail = candidateEmails[index]
+            try {
+                getFirebaseAuth().signInWithEmailAndPassword(currentEmail, password)
+                    .addOnCompleteListener { task ->
+                        if (task.isSuccessful) {
+                            val user = task.result?.user
+                            val uid = user?.uid
+                            if (uid != null) {
+                                Log.d(TAG, "Sign in successful for phone $phoneNumber ($currentEmail), UID: $uid")
+                                checkUserProfileInFirestore(uid, phoneNumber)
+                                onSuccess()
+                            } else {
+                                val err = "Authentication succeeded but user session is null."
+                                _authState.value = AuthState.Error(err)
+                                onError(err)
+                            }
                         } else {
-                            val err = "Authentication succeeded but user session is null."
-                            _authState.value = AuthState.Error(err)
-                            onError(err)
+                            val rawErr = task.exception?.message ?: ""
+                            val isNotFoundOrInvalid = rawErr.contains("no user record", ignoreCase = true) ||
+                                    rawErr.contains("user-not-found", ignoreCase = true) ||
+                                    rawErr.contains("invalid-credential", ignoreCase = true) ||
+                                    rawErr.contains("wrong-password", ignoreCase = true) ||
+                                    rawErr.contains("invalid password", ignoreCase = true)
+
+                            if (isNotFoundOrInvalid && index + 1 < candidateEmails.size) {
+                                Log.d(TAG, "Email $currentEmail failed, trying next candidate...")
+                                trySignIn(index + 1)
+                            } else {
+                                val formatted = when {
+                                    rawErr.contains("no user record", ignoreCase = true) ||
+                                    rawErr.contains("user-not-found", ignoreCase = true) ->
+                                        "No account found with this phone number. Please register first."
+                                    rawErr.contains("invalid-credential", ignoreCase = true) ||
+                                    rawErr.contains("wrong-password", ignoreCase = true) ||
+                                    rawErr.contains("invalid password", ignoreCase = true) ->
+                                        "Incorrect password. Please try again."
+                                    else -> rawErr.ifBlank { "Authentication failed." }
+                                }
+                                _authState.value = AuthState.Error(formatted)
+                                onError(formatted)
+                            }
                         }
-                    } else {
-                        val rawErr = task.exception?.message ?: "Authentication failed."
-                        val formatted = when {
-                            rawErr.contains("no user record", ignoreCase = true) ||
-                            rawErr.contains("user-not-found", ignoreCase = true) ->
-                                "No account found with this phone number. Please register first."
-                            rawErr.contains("invalid-credential", ignoreCase = true) ||
-                            rawErr.contains("wrong-password", ignoreCase = true) ||
-                            rawErr.contains("invalid password", ignoreCase = true) ->
-                                "Incorrect password. Please try again."
-                            else -> rawErr
-                        }
-                        _authState.value = AuthState.Error(formatted)
-                        onError(formatted)
                     }
+            } catch (e: Exception) {
+                if (index + 1 < candidateEmails.size) {
+                    trySignIn(index + 1)
+                } else {
+                    Log.e(TAG, "Sign in exception: ${e.localizedMessage}", e)
+                    val err = e.localizedMessage ?: "Sign in error. Please try again."
+                    _authState.value = AuthState.Error(err)
+                    onError(err)
                 }
-        } catch (e: Exception) {
-            Log.e(TAG, "Sign in exception: ${e.localizedMessage}", e)
-            val err = e.localizedMessage ?: "Sign in error. Please try again."
-            _authState.value = AuthState.Error(err)
-            onError(err)
+            }
         }
+
+        trySignIn(0)
     }
 
     /**
@@ -287,31 +338,48 @@ class AuthManager(private val context: Context) {
             return
         }
 
-        val internalEmail = getInternalEmail(phoneNumber)
+        val candidateEmails = getCandidateInternalEmails(phoneNumber)
 
-        try {
-            getFirebaseAuth().sendPasswordResetEmail(internalEmail)
-                .addOnCompleteListener { task ->
-                    if (task.isSuccessful) {
-                        Log.d(TAG, "Password reset email sent to internal email: $internalEmail for phone $phoneNumber")
-                        onSuccess("Password reset instructions sent for account linked to $phoneNumber.")
-                    } else {
-                        val rawErr = task.exception?.message ?: "Password reset failed."
-                        val formatted = when {
-                            rawErr.contains("no user record", ignoreCase = true) ||
-                            rawErr.contains("user-not-found", ignoreCase = true) ->
-                                "No registered account found with mobile number $phoneNumber."
-                            rawErr.contains("invalid-email", ignoreCase = true) ->
-                                "Invalid phone number format."
-                            else -> rawErr
+        fun tryReset(index: Int) {
+            if (index >= candidateEmails.size) {
+                onError("No registered account found with mobile number $phoneNumber.")
+                return
+            }
+
+            val currentEmail = candidateEmails[index]
+            try {
+                getFirebaseAuth().sendPasswordResetEmail(currentEmail)
+                    .addOnCompleteListener { task ->
+                        if (task.isSuccessful) {
+                            Log.d(TAG, "Password reset email sent to internal email: $currentEmail for phone $phoneNumber")
+                            onSuccess("Password reset instructions sent for account linked to $phoneNumber.")
+                        } else {
+                            if (index + 1 < candidateEmails.size) {
+                                tryReset(index + 1)
+                            } else {
+                                val rawErr = task.exception?.message ?: "Password reset failed."
+                                val formatted = when {
+                                    rawErr.contains("no user record", ignoreCase = true) ||
+                                    rawErr.contains("user-not-found", ignoreCase = true) ->
+                                        "No registered account found with mobile number $phoneNumber."
+                                    rawErr.contains("invalid-email", ignoreCase = true) ->
+                                        "Invalid phone number format."
+                                    else -> rawErr
+                                }
+                                onError(formatted)
+                            }
                         }
-                        onError(formatted)
                     }
+            } catch (e: Exception) {
+                if (index + 1 < candidateEmails.size) {
+                    tryReset(index + 1)
+                } else {
+                    onError(e.localizedMessage ?: "Failed to request password reset. Please try again.")
                 }
-        } catch (e: Exception) {
-            Log.e(TAG, "Password reset exception: ${e.localizedMessage}", e)
-            onError(e.localizedMessage ?: "Failed to request password reset. Please try again.")
+            }
         }
+
+        tryReset(0)
     }
 
     private fun saveUserProfileAndAuthenticate(
@@ -391,15 +459,21 @@ class AuthManager(private val context: Context) {
         }
 
         try {
+            val firebaseUser = getFirebaseAuth().currentUser
+            val firebaseAuthName = firebaseUser?.displayName ?: ""
+            val localName = prefs.getString(KEY_NAME, "") ?: ""
+
             val db = getFirestore()
             db.collection("users").document(uid).get()
                 .addOnSuccessListener { doc ->
-                    if (doc != null && doc.exists() && !doc.getString("name").isNullOrBlank()) {
-                        val name = doc.getString("name") ?: ""
-                        val phone = doc.getString("phoneNumber") ?: phoneNumber
-                        val docSuffix = doc.getString("phoneSuffix") ?: PhoneUtils.extractPhoneSuffix(phone)
-                        val docPic = doc.getString("profilePicUrl") ?: ""
-                        val bio = doc.getString("bio") ?: "Available on Talkly 💬"
+                    val docName = if (doc != null && doc.exists()) (doc.getString("name") ?: "") else ""
+                    val finalName = if (docName.isNotBlank()) docName else if (firebaseAuthName.isNotBlank()) firebaseAuthName else localName
+
+                    if (finalName.isNotBlank()) {
+                        val phone = (if (doc != null && doc.exists()) doc.getString("phoneNumber") else null) ?: phoneNumber
+                        val docSuffix = (if (doc != null && doc.exists()) doc.getString("phoneSuffix") else null) ?: PhoneUtils.extractPhoneSuffix(phone)
+                        val docPic = (if (doc != null && doc.exists()) doc.getString("profilePicUrl") else null) ?: ""
+                        val bio = (if (doc != null && doc.exists()) doc.getString("bio") else null) ?: "Available on Talkly 💬"
 
                         // Local stored picture fallback check
                         val localStoredPic = prefs.getString(KEY_PROFILE_PIC, "") ?: ""
@@ -413,24 +487,41 @@ class AuthManager(private val context: Context) {
 
                         val profile = UserProfile(
                             uid = uid,
-                            name = name,
+                            name = finalName,
                             phoneNumber = phone,
                             phoneSuffix = docSuffix,
                             profilePicUrl = finalPic,
                             bio = bio
                         )
-                        saveLocalSession(uid, name, phone, finalPic, bio)
+                        saveLocalSession(uid, finalName, phone, finalPic, bio)
                         _authState.value = AuthState.Authenticated(profile)
-                    } else {
-                        val localName = prefs.getString(KEY_NAME, "") ?: ""
-                        if (localName.isBlank()) {
-                            saveLocalSession(uid, "", phoneNumber, "", "")
-                            _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
+
+                        // If Firestore was missing name, sync it back
+                        if (docName.isBlank()) {
+                            db.collection("users").document(uid).update("name", finalName)
                         }
+                    } else {
+                        saveLocalSession(uid, "", phoneNumber, "", "")
+                        _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
                     }
                 }
                 .addOnFailureListener { e ->
                     Log.w(TAG, "Firestore user profile read failed: ${e.localizedMessage}")
+                    val fallbackName = if (firebaseAuthName.isNotBlank()) firebaseAuthName else localName
+                    if (fallbackName.isNotBlank()) {
+                        val profile = UserProfile(
+                            uid = uid,
+                            name = fallbackName,
+                            phoneNumber = phoneNumber,
+                            phoneSuffix = PhoneUtils.extractPhoneSuffix(phoneNumber),
+                            profilePicUrl = prefs.getString(KEY_PROFILE_PIC, "") ?: "",
+                            bio = "Available on Talkly 💬"
+                        )
+                        saveLocalSession(uid, fallbackName, phoneNumber, profile.profilePicUrl, profile.bio)
+                        _authState.value = AuthState.Authenticated(profile)
+                    } else {
+                        _authState.value = AuthState.ProfileSetupRequired(uid, phoneNumber)
+                    }
                 }
         } catch (e: Exception) {
             Log.w(TAG, "Firestore user profile exception: ${e.localizedMessage}")
@@ -522,6 +613,18 @@ class AuthManager(private val context: Context) {
 
         // Save local session immediately with persistent local file or HTTP URL
         saveLocalSession(uid, name, phone, persistentLocalPicUrl, bio)
+
+        // Update FirebaseAuth displayName
+        try {
+            getFirebaseAuth().currentUser?.updateProfile(
+                com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                    .setDisplayName(name)
+                    .build()
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "FirebaseAuth updateProfile exception: ${e.localizedMessage}")
+        }
+
         val profile = UserProfile(
             uid = uid,
             name = name,
@@ -545,14 +648,33 @@ class AuthManager(private val context: Context) {
             "updatedAt" to System.currentTimeMillis()
         )
 
+        val familyMemberMap = mutableMapOf<String, Any>(
+            "id" to uid,
+            "firebaseUid" to uid,
+            "name" to name,
+            "phone" to phone,
+            "avatarUrl" to firestorePicUrl,
+            "status" to bio,
+            "lastSeen" to System.currentTimeMillis()
+        )
+
         try {
             getFirestore().collection("users").document(uid)
                 .set(profileMap, SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.d(TAG, "Saved user profile to Firestore successfully")
+                    Log.d(TAG, "Saved user profile to Firestore users successfully")
                 }
                 .addOnFailureListener { e ->
                     Log.w(TAG, "Firestore user profile write failed: ${e.localizedMessage}")
+                }
+
+            getFirestore().collection("family_members").document(uid)
+                .set(familyMemberMap, SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.d(TAG, "Saved user profile to Firestore family_members successfully")
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Firestore family_members write failed: ${e.localizedMessage}")
                 }
         } catch (e: Exception) {
             Log.w(TAG, "Firestore user save exception: ${e.localizedMessage}")
@@ -573,11 +695,17 @@ class AuthManager(private val context: Context) {
                         val updatedProfile = profile.copy(profilePicUrl = downloadUrl)
                         _authState.value = AuthState.Authenticated(updatedProfile)
 
-                        // Update Firestore user document
+                        // Update Firestore user and family_members document
                         getFirestore().collection("users").document(uid)
                             .update("profilePicUrl", downloadUrl)
                             .addOnSuccessListener {
-                                Log.d(TAG, "Updated Firestore profilePicUrl to Firebase Storage URL")
+                                Log.d(TAG, "Updated Firestore users profilePicUrl")
+                            }
+
+                        getFirestore().collection("family_members").document(uid)
+                            .update("avatarUrl", downloadUrl)
+                            .addOnSuccessListener {
+                                Log.d(TAG, "Updated Firestore family_members avatarUrl")
                             }
                     }
                 } catch (e: Exception) {
